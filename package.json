@@ -1,0 +1,33 @@
+{
+  "name": "cortex-memory",
+  "version": "0.1.0",
+  "description": "Local-first AI memory layer with hybrid retrieval",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/engine.js",
+  "types": "dist/engine.d.ts",
+  "bin": {
+    "cortex": "bin/cortex.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start:mcp": "node dist/mcp-server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "@lancedb/lancedb": "^0.26.2",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@xenova/transformers": "^2.17.2",
+    "commander": "^12.1.0",
+    "uuid": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/uuid": "^10.0.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
