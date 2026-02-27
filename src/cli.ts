@@ -119,13 +119,14 @@ program
   .command('import')
   .description('Import memories from a markdown file')
   .argument('<file>', 'Path to markdown file')
-  .action(async (file: string) => {
+  .option('--no-dedup', 'Disable content-hash deduplication')
+  .action(async (file: string, opts: { dedup: boolean }) => {
     const engine = new MemoryEngine();
     try {
       const parsed = parseMarkdownFile(file);
       console.log(`Parsed ${parsed.length} memories from ${file}`);
 
-      const count = await engine.saveBatch(parsed.map(p => p.input));
+      const count = await engine.saveBatch(parsed.map(p => p.input), opts.dedup);
       console.log(`\n✓ Imported ${count} memories`);
     } catch (err) {
       console.error('Error importing:', (err as Error).message);

@@ -1,11 +1,17 @@
 import { Index, type Connection, type Table } from '@lancedb/lancedb';
 import { v4 as uuidv4 } from 'uuid';
+import { createHash } from 'crypto';
 import { initDatabase, getDefaultDbPath, getOrCreateTable } from './schema.js';
 import { embed } from './embeddings.js';
 import { computeRecencyScore, computeHybridScore, normalizeBm25Scores } from './scoring.js';
 import type { Memory, MemoryInput, MemoryType, SearchOptions, SearchResult, MemoryStats } from './types.js';
 import { statSync, readdirSync } from 'fs';
 import { join } from 'path';
+
+/** SHA-256 hash of content string, used for dedup */
+export function contentHash(text: string): string {
+  return createHash('sha256').update(text.trim()).digest('hex');
+}
 
 export class MemoryEngine {
   private dbPath: string;
@@ -73,10 +79,35 @@ export class MemoryEngine {
     }
   }
 
-  async saveBatch(inputs: MemoryInput[]): Promise<number> {
+  /**
+   * Load all existing content hashes from the database.
+   * Returns a Set of SHA-256 hex strings.
+   */
+  async getExistingContentHashes(): Promise<Set<string>> {
+    const tbl = await this.table();
+    const hashes = new Set<string>();
+    try {
+      const rows = await tbl.query().select(['content']).toArray();
+      for (const r of rows) {
+        hashes.add(contentHash(r.content));
+      }
+    } catch {
+      // empty table
+    }
+    return hashes;
+  }
+
+  async saveBatch(inputs: MemoryInput[], dedup = false): Promise<number> {
     const tbl = await this.table();
     const now = new Date().toISOString();
     let count = 0;
+    let skipped = 0;
+
+    // Load existing hashes for dedup
+    const existingHashes = dedup ? await this.getExistingContentHashes() : new Set<string>();
+    if (dedup) {
+      console.log(`  Dedup enabled: ${existingHashes.size} existing content hashes loaded`);
+    }
 
     // Process in batches of 50 to avoid memory issues
     const batchSize = 50;
@@ -84,6 +115,16 @@ export class MemoryEngine {
       const batch = inputs.slice(i, i + batchSize);
       const rows = [];
       for (const input of batch) {
+        // Dedup check
+        if (dedup) {
+          const hash = contentHash(input.content);
+          if (existingHashes.has(hash)) {
+            skipped++;
+            continue;
+          }
+          existingHashes.add(hash); // prevent intra-batch dupes too
+        }
+
         const embedding = await embed(input.content);
         rows.push({
           id: uuidv4(),
@@ -99,9 +140,16 @@ export class MemoryEngine {
           vector: Array.from(embedding),
         });
       }
-      await tbl.add(rows);
+      if (rows.length > 0) {
+        await tbl.add(rows);
+      }
       count += rows.length;
-      process.stdout.write(`  Saved ${count}/${inputs.length}\r`);
+      process.stdout.write(`  Saved ${count}/${inputs.length} (skipped ${skipped} dupes)\r`);
+    }
+
+    console.log(); // newline after progress
+    if (skipped > 0) {
+      console.log(`  Dedup: skipped ${skipped} duplicate memories`);
     }
 
     // Rebuild FTS once at the end
