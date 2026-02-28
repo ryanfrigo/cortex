@@ -4,7 +4,7 @@ import { createHash } from 'crypto';
 import { initDatabase, getDefaultDbPath, getOrCreateTable } from './schema.js';
 import { embed } from './embeddings.js';
 import { computeRecencyScore, computeHybridScore, normalizeBm25Scores } from './scoring.js';
-import type { Memory, MemoryInput, MemoryType, SearchOptions, SearchResult, MemoryStats } from './types.js';
+import type { Memory, MemoryInput, MemoryType, SearchOptions, SearchResult, MemoryStats, MemoryMetadata } from './types.js';
 import { statSync, readdirSync } from 'fs';
 import { join } from 'path';
 
@@ -37,6 +37,7 @@ export class MemoryEngine {
     const importance = input.importance ?? 0.5;
     const source = input.source ?? 'cli';
     const tags = input.tags ?? [];
+    const metadata = input.metadata ?? {};
 
     const embedding = await embed(input.content);
     const tbl = await this.table();
@@ -48,6 +49,7 @@ export class MemoryEngine {
       importance,
       source,
       tags: JSON.stringify(tags),
+      metadata: JSON.stringify(metadata),
       created_at: now,
       updated_at: now,
       accessed_at: now,
@@ -55,17 +57,14 @@ export class MemoryEngine {
       vector: Array.from(embedding),
     }]);
 
-    // Rebuild FTS index after adding data (skip during batch imports)
     if (rebuildFts) {
       try {
         await tbl.createIndex('content', { config: Index.fts(), replace: true });
-      } catch {
-        // ignore
-      }
+      } catch { /* ignore */ }
     }
 
     return {
-      id, type, content: input.content, embedding, importance, source, tags,
+      id, type, content: input.content, embedding, importance, source, tags, metadata,
       createdAt: now, updatedAt: now, accessedAt: now, accessCount: 0,
     };
   }
@@ -74,15 +73,9 @@ export class MemoryEngine {
     const tbl = await this.table();
     try {
       await tbl.createIndex('content', { config: Index.fts(), replace: true });
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   }
 
-  /**
-   * Load all existing content hashes from the database.
-   * Returns a Set of SHA-256 hex strings.
-   */
   async getExistingContentHashes(): Promise<Set<string>> {
     const tbl = await this.table();
     const hashes = new Set<string>();
@@ -91,9 +84,7 @@ export class MemoryEngine {
       for (const r of rows) {
         hashes.add(contentHash(r.content));
       }
-    } catch {
-      // empty table
-    }
+    } catch { /* empty table */ }
     return hashes;
   }
 
@@ -103,26 +94,20 @@ export class MemoryEngine {
     let count = 0;
     let skipped = 0;
 
-    // Load existing hashes for dedup
     const existingHashes = dedup ? await this.getExistingContentHashes() : new Set<string>();
     if (dedup) {
       console.log(`  Dedup enabled: ${existingHashes.size} existing content hashes loaded`);
     }
 
-    // Process in batches of 50 to avoid memory issues
     const batchSize = 50;
     for (let i = 0; i < inputs.length; i += batchSize) {
       const batch = inputs.slice(i, i + batchSize);
       const rows = [];
       for (const input of batch) {
-        // Dedup check
         if (dedup) {
           const hash = contentHash(input.content);
-          if (existingHashes.has(hash)) {
-            skipped++;
-            continue;
-          }
-          existingHashes.add(hash); // prevent intra-batch dupes too
+          if (existingHashes.has(hash)) { skipped++; continue; }
+          existingHashes.add(hash);
         }
 
         const embedding = await embed(input.content);
@@ -133,6 +118,7 @@ export class MemoryEngine {
           importance: input.importance ?? 0.5,
           source: input.source ?? 'cli',
           tags: JSON.stringify(input.tags ?? []),
+          metadata: JSON.stringify(input.metadata ?? {}),
           created_at: now,
           updated_at: now,
           accessed_at: now,
@@ -140,19 +126,13 @@ export class MemoryEngine {
           vector: Array.from(embedding),
         });
       }
-      if (rows.length > 0) {
-        await tbl.add(rows);
-      }
+      if (rows.length > 0) await tbl.add(rows);
       count += rows.length;
       process.stdout.write(`  Saved ${count}/${inputs.length} (skipped ${skipped} dupes)\r`);
     }
 
-    console.log(); // newline after progress
-    if (skipped > 0) {
-      console.log(`  Dedup: skipped ${skipped} duplicate memories`);
-    }
-
-    // Rebuild FTS once at the end
+    console.log();
+    if (skipped > 0) console.log(`  Dedup: skipped ${skipped} duplicate memories`);
     await this.rebuildFtsIndex();
     return count;
   }
@@ -162,40 +142,25 @@ export class MemoryEngine {
     const tbl = await this.table();
     const queryEmbedding = await embed(options.query);
 
-    // Vector search
-    let vecResults: Array<{ id: string; _distance: number; type: string; content: string; importance: number; source: string; tags: string; created_at: string; updated_at: string; accessed_at: string; access_count: number }>;
+    let vecResults: any[];
     try {
-      vecResults = await tbl.search(Array.from(queryEmbedding))
-        .limit(limit * 3)
-        .toArray();
-    } catch {
-      vecResults = [];
-    }
+      vecResults = await tbl.search(Array.from(queryEmbedding)).limit(limit * 3).toArray();
+    } catch { vecResults = []; }
 
     if (vecResults.length === 0) return [];
 
-    // Convert L2 distance to similarity score [0, 1]
-    // L2 distance for normalized vectors is in [0, 4] range (2*(1-cos_sim))
-    // We use: similarity = 1 / (1 + distance) for a smooth conversion
     const vecScoreMap = new Map(vecResults.map(r => [r.id, 1 / (1 + r._distance)]));
 
-    // BM25 / full-text search
     const bm25Map = new Map<string, number>();
     try {
-      const ftsResults = await tbl.search(options.query, 'fts')
-        .limit(limit * 3)
-        .toArray();
-      
+      const ftsResults = await tbl.search(options.query, 'fts').limit(limit * 3).toArray();
       if (ftsResults.length > 0) {
         const rawScores = ftsResults.map(r => r._score ?? 1);
         const normalized = normalizeBm25Scores(rawScores);
         ftsResults.forEach((r: any, i: number) => bm25Map.set(r.id, normalized[i]));
       }
-    } catch {
-      // FTS might not be available or query might fail
-    }
+    } catch { /* FTS might not be available */ }
 
-    // Score and filter
     const results: SearchResult[] = vecResults
       .filter(m => {
         if (options.type && m.type !== options.type) return false;
@@ -204,6 +169,12 @@ export class MemoryEngine {
           const memTags = JSON.parse(m.tags) as string[];
           if (!options.tags.some(t => memTags.includes(t))) return false;
         }
+        if (options.project) {
+          try {
+            const meta = JSON.parse(m.metadata || '{}');
+            if (meta.project && meta.project !== options.project) return false;
+          } catch { /* ignore */ }
+        }
         return true;
       })
       .map(m => {
@@ -211,7 +182,7 @@ export class MemoryEngine {
         const bm25Score = bm25Map.get(m.id) ?? 0;
         const recencyScore = computeRecencyScore(m.accessed_at);
         const importanceScore = m.importance;
-        const score = computeHybridScore(vectorScore, bm25Score, recencyScore, importanceScore);
+        const score = computeHybridScore(vectorScore, bm25Score, recencyScore, importanceScore, m.access_count ?? 0, m.type as MemoryType);
 
         return {
           memory: this.rowToMemory(m),
@@ -221,18 +192,15 @@ export class MemoryEngine {
 
     results.sort((a, b) => b.score - a.score);
 
-    // Update accessed_at for top results
     const topResults = results.slice(0, limit);
     const now = new Date().toISOString();
     for (const r of topResults) {
       try {
         await tbl.update({
           where: `id = '${r.memory.id}'`,
-          values: { accessed_at: now, access_count: (r.memory as any).accessCount + 1 + '' },
+          values: { accessed_at: now, access_count: (r.memory.accessCount + 1) + '' },
         });
-      } catch {
-        // ignore update errors
-      }
+      } catch { /* ignore */ }
     }
 
     return topResults;
@@ -243,9 +211,15 @@ export class MemoryEngine {
     try {
       const results = await tbl.query().where(`id = '${id}'`).limit(1).toArray();
       return results.length > 0 ? this.rowToMemory(results[0]) : null;
-    } catch {
-      return null;
-    }
+    } catch { return null; }
+  }
+
+  async getAll(): Promise<Memory[]> {
+    const tbl = await this.table();
+    try {
+      const rows = await tbl.query().toArray();
+      return rows.map(r => this.rowToMemory(r));
+    } catch { return []; }
   }
 
   async update(id: string, updates: Partial<MemoryInput>): Promise<Memory | null> {
@@ -258,11 +232,10 @@ export class MemoryEngine {
     const type = updates.type ?? existing.type;
     const importance = updates.importance ?? existing.importance;
     const tags = updates.tags ?? existing.tags;
+    const metadata = updates.metadata ?? existing.metadata ?? {};
 
-    // LanceDB update is limited; delete and re-add
     await tbl.delete(`id = '${id}'`);
-
-    const embedding = updates.content ? await embed(content) : await embed(existing.content);
+    const embedding = await embed(content);
 
     await tbl.add([{
       id,
@@ -271,6 +244,7 @@ export class MemoryEngine {
       importance,
       source: existing.source,
       tags: JSON.stringify(tags),
+      metadata: JSON.stringify(metadata),
       created_at: existing.createdAt,
       updated_at: now,
       accessed_at: existing.accessedAt,
@@ -288,27 +262,29 @@ export class MemoryEngine {
       if (existing.length === 0) return false;
       await tbl.delete(`id = '${id}'`);
       return true;
-    } catch {
-      return false;
+    } catch { return false; }
+  }
+
+  async deleteBatch(ids: string[]): Promise<number> {
+    let deleted = 0;
+    for (const id of ids) {
+      if (await this.delete(id)) deleted++;
     }
+    return deleted;
   }
 
   async stats(): Promise<MemoryStats> {
     const tbl = await this.table();
     let rows: any[];
-    try {
-      rows = await tbl.query().toArray();
-    } catch {
-      rows = [];
-    }
+    try { rows = await tbl.query().toArray(); } catch { rows = []; }
 
-    const byType: Record<MemoryType, number> = { episodic: 0, semantic: 0, procedural: 0 };
+    const byType: Record<string, number> = {};
     let oldest: string | null = null;
     let newest: string | null = null;
 
     for (const r of rows) {
-      const t = r.type as MemoryType;
-      if (byType[t] !== undefined) byType[t]++;
+      const t = r.type as string;
+      byType[t] = (byType[t] ?? 0) + 1;
       if (!oldest || r.created_at < oldest) oldest = r.created_at;
       if (!newest || r.created_at > newest) newest = r.created_at;
     }
@@ -327,20 +303,28 @@ export class MemoryEngine {
       dbSizeBytes = calcSize(this.dbPath);
     } catch { /* */ }
 
-    return {
-      totalMemories: rows.length,
-      byType,
-      dbSizeBytes,
-      oldestMemory: oldest,
-      newestMemory: newest,
-    };
+    return { totalMemories: rows.length, byType, dbSizeBytes, oldestMemory: oldest, newestMemory: newest };
+  }
+
+  /** Get top memories by access count and importance for reflection */
+  async reflect(): Promise<{ mostAccessed: Memory[]; highestImportance: Memory[] }> {
+    const all = await this.getAll();
+    const byAccess = [...all].sort((a, b) => b.accessCount - a.accessCount).slice(0, 10);
+    const byImportance = [...all].sort((a, b) => b.importance - a.importance).slice(0, 10);
+    return { mostAccessed: byAccess, highestImportance: byImportance };
   }
 
   close(): void {
-    // LanceDB connections don't need explicit closing in the same way
+    // LanceDB connections don't need explicit closing
   }
 
   private rowToMemory(row: any): Memory {
+    let metadata: MemoryMetadata | undefined;
+    try {
+      const parsed = JSON.parse(row.metadata || '{}');
+      if (Object.keys(parsed).length > 0) metadata = parsed;
+    } catch { /* ignore */ }
+
     return {
       id: row.id,
       type: row.type,
@@ -352,7 +336,8 @@ export class MemoryEngine {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       accessedAt: row.accessed_at,
-      accessCount: row.access_count,
+      accessCount: row.access_count ?? 0,
+      metadata,
     };
   }
 }

@@ -26,6 +26,7 @@ export async function getOrCreateTable(db: Connection): Promise<Table> {
       importance: 0.5,
       source: 'system',
       tags: '[]',
+      metadata: '{}',
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       accessed_at: new Date().toISOString(),

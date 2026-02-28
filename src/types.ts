@@ -1,4 +1,11 @@
-export type MemoryType = 'episodic' | 'semantic' | 'procedural';
+export type MemoryType = 'episodic' | 'semantic' | 'procedural' | 'decision' | 'lesson' | 'fact' | 'preference' | 'project-state' | 'person';
+
+export interface MemoryMetadata {
+  project?: string;      // e.g. "voicecharm", "kalshi", "clawmart"
+  confidence?: number;   // 0-1, how verified is this
+  supersedes?: string;   // ID of memory this replaces
+  expiresAt?: string;    // ISO 8601, for time-bound facts
+}
 
 export interface Memory {
   id: string;
@@ -12,6 +19,7 @@ export interface Memory {
   updatedAt: string;
   accessedAt: string;
   accessCount: number;
+  metadata?: MemoryMetadata;
 }
 
 export interface MemoryInput {
@@ -20,6 +28,7 @@ export interface MemoryInput {
   importance?: number;
   source?: string;
   tags?: string[];
+  metadata?: MemoryMetadata;
 }
 
 export interface SearchOptions {
@@ -28,6 +37,7 @@ export interface SearchOptions {
   type?: MemoryType;
   tags?: string[];
   minImportance?: number;
+  project?: string;
 }
 
 export interface SearchResult {
@@ -41,7 +51,7 @@ export interface SearchResult {
 
 export interface MemoryStats {
   totalMemories: number;
-  byType: Record<MemoryType, number>;
+  byType: Record<string, number>;
   dbSizeBytes: number;
   oldestMemory: string | null;
   newestMemory: string | null;
