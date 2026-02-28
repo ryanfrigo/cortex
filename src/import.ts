@@ -5,9 +5,68 @@ interface ParsedMemory {
   input: MemoryInput;
 }
 
+// High-signal extraction patterns
+const HIGH_SIGNAL_PATTERNS: { pattern: RegExp; type: MemoryType; importance: number }[] = [
+  { pattern: /^Decision:\s*(.+)/i, type: 'decision', importance: 0.9 },
+  { pattern: /^Decided:\s*(.+)/i, type: 'decision', importance: 0.9 },
+  { pattern: /^Lesson:\s*(.+)/i, type: 'lesson', importance: 0.85 },
+  { pattern: /^Learned:\s*(.+)/i, type: 'lesson', importance: 0.85 },
+  { pattern: /^Key:\s*(.+)/i, type: 'fact', importance: 0.8 },
+  { pattern: /^Important:\s*(.+)/i, type: 'fact', importance: 0.8 },
+  { pattern: /^Bug:\s*(.+)/i, type: 'lesson', importance: 0.75 },
+  { pattern: /^Fix:\s*(.+)/i, type: 'lesson', importance: 0.75 },
+  { pattern: /^Shipped:\s*(.+)/i, type: 'fact', importance: 0.7 },
+  { pattern: /^Preference:\s*(.+)/i, type: 'preference', importance: 0.7 },
+  { pattern: /^Prefers?:\s*(.+)/i, type: 'preference', importance: 0.7 },
+];
+
+export function extractHighSignalMemories(content: string, source: string): ParsedMemory[] {
+  const memories: ParsedMemory[] = [];
+  const lines = content.split('\n');
+  const usedLines = new Set<number>();
+
+  // First pass: extract high-signal lines
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/^[-*]\s+/, '').trim();
+    if (!line) continue;
+
+    for (const { pattern, type, importance } of HIGH_SIGNAL_PATTERNS) {
+      const match = line.match(pattern);
+      if (match) {
+        memories.push({
+          input: {
+            content: match[1].trim(),
+            type,
+            importance,
+            source,
+            tags: ['high-signal'],
+          },
+        });
+        usedLines.add(i);
+        break;
+      }
+    }
+  }
+
+  // Second pass: fall back to standard parsing for remaining content, lower importance
+  const remainingLines = lines.filter((_, i) => !usedLines.has(i));
+  const remainingContent = remainingLines.join('\n');
+  const fallback = parseMarkdown(remainingContent, source);
+  for (const m of fallback) {
+    m.input.importance = Math.min(m.input.importance ?? 0.3, 0.3);
+  }
+
+  return [...memories, ...fallback];
+}
+
 export function parseMarkdownFile(filePath: string): ParsedMemory[] {
   const content = readFileSync(filePath, 'utf-8');
   return parseMarkdown(content, filePath);
+}
+
+export function parseMarkdownFileSmart(filePath: string): ParsedMemory[] {
+  const content = readFileSync(filePath, 'utf-8');
+  return extractHighSignalMemories(content, filePath);
 }
 
 export function parseMarkdown(content: string, source: string = 'import'): ParsedMemory[] {
@@ -80,12 +139,17 @@ function inferType(section: string): MemoryType {
   if (lower.includes('event') || lower.includes('log') || lower.includes('history') || lower.includes('episode')) {
     return 'episodic';
   }
+  if (lower.includes('decision')) return 'decision';
+  if (lower.includes('lesson') || lower.includes('learned')) return 'lesson';
+  if (lower.includes('preference') || lower.includes('likes') || lower.includes('dislikes')) return 'preference';
+  if (lower.includes('fact') || lower.includes('reference')) return 'fact';
+  if (lower.includes('project') || lower.includes('state') || lower.includes('status')) return 'project-state';
+  if (lower.includes('person') || lower.includes('people') || lower.includes('team')) return 'person';
   return 'semantic';
 }
 
 function inferImportance(text: string): number {
   const lower = text.toLowerCase();
-  // Higher importance for strong preference/identity signals
   if (lower.includes('always') || lower.includes('never') || lower.includes('important') || lower.includes('critical')) {
     return 0.8;
   }
