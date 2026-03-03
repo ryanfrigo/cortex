@@ -1,4 +1,4 @@
-export type MemoryType = 'episodic' | 'semantic' | 'procedural' | 'decision' | 'lesson' | 'fact' | 'preference' | 'project-state' | 'person';
+export type MemoryType = 'episodic' | 'semantic' | 'procedural' | 'decision' | 'lesson' | 'fact' | 'preference' | 'project-state' | 'person' | 'session';
 
 export interface MemoryMetadata {
   project?: string;      // e.g. "voicecharm", "kalshi", "clawmart"

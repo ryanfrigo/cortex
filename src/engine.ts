@@ -142,9 +142,11 @@ export class MemoryEngine {
     const tbl = await this.table();
     const queryEmbedding = await embed(options.query);
 
+    // When filtering by type, we need more candidates since most will be filtered out
+    const searchMultiplier = options.type ? 20 : 3;
     let vecResults: any[];
     try {
-      vecResults = await tbl.search(Array.from(queryEmbedding)).limit(limit * 3).toArray();
+      vecResults = await tbl.search(Array.from(queryEmbedding)).limit(limit * searchMultiplier).toArray();
     } catch { vecResults = []; }
 
     if (vecResults.length === 0) return [];
