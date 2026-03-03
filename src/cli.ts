@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { MemoryEngine } from './engine.js';
 import { parseMarkdownFile, parseMarkdownFileSmart } from './import.js';
+import { ingestSessions } from './ingest-sessions.js';
 import type { MemoryType } from './types.js';
 import * as readline from 'readline';
 
@@ -231,6 +232,25 @@ program
       }
     } finally {
       engine.close();
+    }
+  });
+
+program
+  .command('ingest-sessions')
+  .description('Ingest OpenClaw session transcripts into Cortex')
+  .option('--force', 'Re-ingest all sessions (ignore checkpoint)')
+  .option('-n, --limit <n>', 'Max sessions to process')
+  .option('-v, --verbose', 'Show per-session progress')
+  .action(async (opts) => {
+    try {
+      await ingestSessions({
+        force: opts.force,
+        limit: opts.limit ? parseInt(opts.limit) : undefined,
+        verbose: opts.verbose,
+      });
+    } catch (err) {
+      console.error('Error ingesting sessions:', (err as Error).message);
+      process.exit(1);
     }
   });
 
