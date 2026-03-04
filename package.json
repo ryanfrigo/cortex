@@ -1,7 +1,7 @@
 {
   "name": "cortex-memory",
-  "version": "0.1.0",
-  "description": "Local-first AI memory layer with hybrid retrieval",
+  "version": "0.2.0",
+  "description": "Local-first AI memory layer with hybrid vector + full-text retrieval. No API keys needed. Built-in MCP server for Claude, Cursor, and OpenClaw.",
   "license": "MIT",
   "type": "module",
   "main": "dist/engine.js",
@@ -9,6 +9,35 @@
   "bin": {
     "cortex": "bin/cortex.js"
   },
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ryanfrigo/cortex.git"
+  },
+  "homepage": "https://github.com/ryanfrigo/cortex#readme",
+  "keywords": [
+    "memory",
+    "ai",
+    "vector-search",
+    "embeddings",
+    "lancedb",
+    "mcp",
+    "model-context-protocol",
+    "local-first",
+    "hybrid-search",
+    "bm25",
+    "semantic-search",
+    "knowledge-base",
+    "rag",
+    "claude",
+    "cursor",
+    "openclaw"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",

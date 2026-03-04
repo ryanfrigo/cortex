@@ -4,13 +4,15 @@ import { parseMarkdownFile, parseMarkdownFileSmart } from './import.js';
 import { ingestSessions } from './ingest-sessions.js';
 import type { MemoryType } from './types.js';
 import * as readline from 'readline';
+import { readdirSync, statSync } from 'fs';
+import { join, extname } from 'path';
 
 const program = new Command();
 
 program
   .name('cortex')
   .description('Local-first AI memory layer')
-  .version('0.1.0');
+  .version('0.2.0');
 
 program
   .command('save')
@@ -230,6 +232,58 @@ program
         if (m.metadata?.project) console.log(`*Project: ${m.metadata.project}*`);
         console.log();
       }
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('ingest')
+  .description('Ingest a folder of text/markdown files into Cortex')
+  .argument('<folder>', 'Path to folder containing files to ingest')
+  .option('-r, --recursive', 'Recurse into subdirectories')
+  .option('--smart', 'Use high-signal extraction (Decision:, Lesson:, etc.)')
+  .option('--no-dedup', 'Disable content-hash deduplication')
+  .option('--ext <extensions>', 'Comma-separated file extensions to include', '.md,.txt,.markdown')
+  .action(async (folder: string, opts) => {
+    const engine = new MemoryEngine();
+    try {
+      const extensions = new Set(opts.ext.split(',').map((e: string) => e.trim().startsWith('.') ? e.trim() : '.' + e.trim()));
+
+      const collectFiles = (dir: string): string[] => {
+        const files: string[] = [];
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const fullPath = join(dir, entry.name);
+          if (entry.isDirectory() && opts.recursive) {
+            files.push(...collectFiles(fullPath));
+          } else if (entry.isFile() && extensions.has(extname(entry.name).toLowerCase())) {
+            files.push(fullPath);
+          }
+        }
+        return files;
+      };
+
+      const files = collectFiles(folder);
+      if (files.length === 0) {
+        console.log(`No files found with extensions: ${[...extensions].join(', ')}`);
+        return;
+      }
+
+      console.log(`Found ${files.length} files to ingest`);
+      let totalMemories = 0;
+
+      for (const file of files) {
+        const parsed = opts.smart ? parseMarkdownFileSmart(file) : parseMarkdownFile(file);
+        if (parsed.length === 0) continue;
+        const count = await engine.saveBatch(parsed.map(p => p.input), opts.dedup);
+        totalMemories += count;
+        console.log(`  ${file}: ${count} memories`);
+      }
+
+      console.log(`\n✓ Ingested ${totalMemories} memories from ${files.length} files`);
+    } catch (err) {
+      console.error('Error ingesting folder:', (err as Error).message);
+      process.exit(1);
     } finally {
       engine.close();
     }
