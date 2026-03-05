@@ -205,7 +205,7 @@ export async function ingestSessions(opts: { force?: boolean; limit?: number; ve
       const inputs: MemoryInput[] = substantive.map(ex => ({
         content: exchangeToMemoryContent(ex, sessionId),
         type: 'session' as MemoryType,
-        importance: 0.4,
+        importance: scoreImportance(ex),
         source: `session:${sessionId}`,
         tags: ['session', 'transcript'],
         metadata: {
@@ -248,4 +248,53 @@ function extractProject(text: string): string | undefined {
     if (lower.includes(p)) return p;
   }
   return undefined;
+}
+
+/** Score exchange importance based on content signals (0.2 - 0.9) */
+function scoreImportance(exchange: ConversationExchange): number {
+  const text = (exchange.userMessage + ' ' + exchange.assistantMessage).toLowerCase();
+  let score = 0.3; // base
+
+  // High-value signals: decisions, deployments, money
+  const highSignals = [
+    /deploy|pushed to prod|shipped|launched|live on/,
+    /decision|decided|pivot|strategy change/,
+    /\$\d+|revenue|paying customer|subscription|invoice/,
+    /api key|secret|credential|password/,
+    /bug fix|critical|breaking|incident|outage/,
+    /architecture|migration|refactor/,
+  ];
+  for (const re of highSignals) {
+    if (re.test(text)) { score += 0.15; break; }
+  }
+
+  // Medium signals: learning, configuration, setup
+  const medSignals = [
+    /learned|lesson|mistake|realized|correction/,
+    /configured|setup|installed|integrated/,
+    /commit|merge|pr |pull request/,
+    /cron|schedule|automat/,
+  ];
+  for (const re of medSignals) {
+    if (re.test(text)) { score += 0.1; break; }
+  }
+
+  // Tool usage depth — more tools = more substantial work
+  if (exchange.toolCalls.length >= 5) score += 0.1;
+  else if (exchange.toolCalls.length >= 2) score += 0.05;
+
+  // Longer substantive responses indicate deeper work
+  if (exchange.assistantMessage.length > 1500) score += 0.05;
+
+  // Low-value signals: reduce score
+  const lowSignals = [
+    /heartbeat|heartbeat_ok/,
+    /no_reply/,
+    /weather|temperature|forecast/,
+  ];
+  for (const re of lowSignals) {
+    if (re.test(text)) { score -= 0.1; break; }
+  }
+
+  return Math.max(0.1, Math.min(0.9, score));
 }
