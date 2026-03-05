@@ -1,0 +1,191 @@
+{
+  "date": "2026-03-05",
+  "recall_at_1": 0.909,
+  "recall_at_5": 0.909,
+  "recall_at_10": 0.909,
+  "mrr": 0.909,
+  "avg_latency_ms": 897,
+  "namespace_precision_gain": -1,
+  "per_query": [
+    {
+      "query": "What did Ryan eat for breakfast?",
+      "category": "health",
+      "found_at_rank": 1,
+      "latency_ms": 774,
+      "top_result_preview": "[ChatGPT conversation: \"Eat Cheap, Eat Healthy\" (2024-05-21)]\n\nAssistant: Let's refine the meal plan"
+    },
+    {
+      "query": "Ryan's morning meal routine",
+      "category": "health",
+      "found_at_rank": 1,
+      "latency_ms": 1089,
+      "top_result_preview": "[ChatGPT conversation: \"Personalized hypertrophy workout routine\" (2024-06-27)]\n\nUser: Now modify th"
+    },
+    {
+      "query": "Any health or fitness notes?",
+      "category": "health",
+      "found_at_rank": 1,
+      "latency_ms": 455,
+      "top_result_preview": "[ChatGPT conversation: \"Nature-Integrated Pavilion-Style Living\" (2024-03-26)]\n\nAssistant: For track"
+    },
+    {
+      "query": "What's the VoiceCharm tech stack?",
+      "category": "projects",
+      "found_at_rank": 1,
+      "latency_ms": 1058,
+      "top_result_preview": "**Content:** ~1,500 words on building VoiceCharm, voice AI lessons from hundreds of real calls, the "
+    },
+    {
+      "query": "VoiceCharm architecture and technologies",
+      "category": "projects",
+      "found_at_rank": 1,
+      "latency_ms": 471,
+      "top_result_preview": "Project: `voicecharm`"
+    },
+    {
+      "query": "What is ClawMart?",
+      "category": "projects",
+      "found_at_rank": 1,
+      "latency_ms": 1066,
+      "top_result_preview": "User: Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. Do not infer or repeat"
+    },
+    {
+      "query": "Kalshi trading bot details",
+      "category": "projects",
+      "found_at_rank": 1,
+      "latency_ms": 480,
+      "top_result_preview": "[ChatGPT conversation: \"Kalshi trading prompt\" (2025-09-27)]\n\nUser: now adapt this prompt for a kals"
+    },
+    {
+      "query": "What's Perspektiv?",
+      "category": "projects",
+      "found_at_rank": 1,
+      "latency_ms": 1189,
+      "top_result_preview": "[ChatGPT conversation: \"Perspektiv SLC analysis\" (2025-12-06)]\n\nUser: what do you think is the SLC o"
+    },
+    {
+      "query": "Cortex memory system",
+      "category": "projects",
+      "found_at_rank": 1,
+      "latency_ms": 466,
+      "top_result_preview": "User: [cron:13916358-48d3-4247-ad3a-9b46e37ec1fe Cortex Memory Sync & Improvement] Cortex Memory Syn"
+    },
+    {
+      "query": "When did Ryan break up with Anya?",
+      "category": "personal",
+      "found_at_rank": 1,
+      "latency_ms": 1169,
+      "top_result_preview": "2026-02-12: Ryan deciding to break up with Anya. Clarity from men's circle. Conversation tonight. Mo"
+    },
+    {
+      "query": "Ryan's relationship history",
+      "category": "personal",
+      "found_at_rank": 1,
+      "latency_ms": 489,
+      "top_result_preview": "**Anya:** Primary relationship 2024-2025. She went to Ghana for 4 months. They opened the relationsh"
+    },
+    {
+      "query": "What lesson did we learn about sub-agents?",
+      "category": "learnings",
+      "found_at_rank": 1,
+      "latency_ms": 1265,
+      "top_result_preview": "User: [Telegram Ryan Frigo id:7773542797 +22s 2026-02-08 16:43 PST] Wtf make sure sub agents don’t h"
+    },
+    {
+      "query": "Best practices for AI coding assistants",
+      "category": "learnings",
+      "found_at_rank": 1,
+      "latency_ms": 504,
+      "top_result_preview": "**User:** create a guide with the most important and powerful best practices for creating human-like"
+    },
+    {
+      "query": "Debugging tips and lessons",
+      "category": "learnings",
+      "found_at_rank": 1,
+      "latency_ms": 1339,
+      "top_result_preview": "Debug tools FIRST before examining code"
+    },
+    {
+      "query": "What's Ryan's address?",
+      "category": "factual",
+      "found_at_rank": 1,
+      "latency_ms": 502,
+      "top_result_preview": "Ryan is a 20-something (now likely late 20s/early 30s) from **Oakland, California** — deeply shaped "
+    },
+    {
+      "query": "Ryan's phone number",
+      "category": "factual",
+      "found_at_rank": null,
+      "latency_ms": 1431,
+      "top_result_preview": "Ryan is a 20-something (now likely late 20s/early 30s) from **Oakland, California** — deeply shaped "
+    },
+    {
+      "query": "What machine does Ryan use?",
+      "category": "factual",
+      "found_at_rank": null,
+      "latency_ms": 521,
+      "top_result_preview": "Ryan is a 20-something (now likely late 20s/early 30s) from **Oakland, California** — deeply shaped "
+    },
+    {
+      "query": "tools for making money from prediction markets",
+      "category": "semantic",
+      "found_at_rank": 1,
+      "latency_ms": 1360,
+      "top_result_preview": "[ChatGPT conversation: \"Prediction Market Strategies\" (2026-01-19)]\n\nUser: How does domer and others"
+    },
+    {
+      "query": "automating video creation for social media",
+      "category": "semantic",
+      "found_at_rank": 1,
+      "latency_ms": 550,
+      "top_result_preview": "[ChatGPT conversation: \"Building a Social Media Brand\" (2025-12-30)]\n\nUser: Actually I want like ins"
+    },
+    {
+      "query": "connecting AI assistants to external tools and APIs",
+      "category": "semantic",
+      "found_at_rank": 1,
+      "latency_ms": 1429,
+      "top_result_preview": "[ChatGPT conversation: \"Product vision crystallization\" (2025-08-17)]\n\nAssistant: # Building an Auto"
+    },
+    {
+      "query": "managing personal knowledge over time",
+      "category": "semantic",
+      "found_at_rank": 1,
+      "latency_ms": 560,
+      "top_result_preview": "[ChatGPT conversation: \"Personal CRM Apps\" (2024-03-25)]\n\nAssistant: Absolutely, there are several a"
+    },
+    {
+      "query": "earning revenue from AI voice products",
+      "category": "semantic",
+      "found_at_rank": 1,
+      "latency_ms": 1570,
+      "top_result_preview": "VoiceCharm provides AI-powered receptionists for small service businesses (plumbers, HVAC, electrici"
+    }
+  ],
+  "per_category": {
+    "health": {
+      "recall_at_5": 1,
+      "mrr": 1
+    },
+    "projects": {
+      "recall_at_5": 1,
+      "mrr": 1
+    },
+    "personal": {
+      "recall_at_5": 1,
+      "mrr": 1
+    },
+    "learnings": {
+      "recall_at_5": 1,
+      "mrr": 1
+    },
+    "factual": {
+      "recall_at_5": 0.3333333333333333,
+      "mrr": 0.333
+    },
+    "semantic": {
+      "recall_at_5": 1,
+      "mrr": 1
+    }
+  }
+}

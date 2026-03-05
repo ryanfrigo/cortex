@@ -283,6 +283,18 @@ npm run build
 node bin/cortex.js status
 ```
 
+### Testing
+
+```bash
+npm test              # Run unit tests (vitest)
+npm run bench         # Run recall benchmarks against real DB
+npm run bench:regression  # Compare with previous benchmark run
+```
+
+- **Unit tests** (`tests/`): engine, scoring, decay, consolidation — uses temp DB
+- **Benchmarks** (`bench/`): 22 ground-truth queries across health, projects, personal, learnings, factual, and semantic categories
+- **Regression guard**: flags if recall drops >5% between runs
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
