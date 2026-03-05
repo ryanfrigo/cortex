@@ -8,6 +8,18 @@ import type { Memory, MemoryInput, MemoryType, SearchOptions, SearchResult, Memo
 import { statSync, readdirSync } from 'fs';
 import { join } from 'path';
 
+/** Cosine similarity between two vectors */
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0, magA = 0, magB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    magA += a[i] * a[i];
+    magB += b[i] * b[i];
+  }
+  const mag = Math.sqrt(magA) * Math.sqrt(magB);
+  return mag === 0 ? 0 : dot / mag;
+}
+
 /** SHA-256 hash of content string, used for dedup */
 export function contentHash(text: string): string {
   return createHash('sha256').update(text.trim()).digest('hex');
@@ -33,6 +45,7 @@ export class MemoryEngine {
   async save(input: MemoryInput, rebuildFts = true): Promise<Memory> {
     const now = new Date().toISOString();
     const id = uuidv4();
+    const namespace = input.namespace ?? 'general';
     const type = input.type ?? 'semantic';
     const importance = input.importance ?? 0.5;
     const source = input.source ?? 'cli';
@@ -44,6 +57,7 @@ export class MemoryEngine {
 
     await tbl.add([{
       id,
+      namespace,
       type,
       content: input.content,
       importance,
@@ -64,7 +78,7 @@ export class MemoryEngine {
     }
 
     return {
-      id, type, content: input.content, embedding, importance, source, tags, metadata,
+      id, namespace, type, content: input.content, embedding, importance, source, tags, metadata,
       createdAt: now, updatedAt: now, accessedAt: now, accessCount: 0,
     };
   }
@@ -113,6 +127,7 @@ export class MemoryEngine {
         const embedding = await embed(input.content);
         rows.push({
           id: uuidv4(),
+          namespace: input.namespace ?? 'general',
           type: input.type ?? 'semantic',
           content: input.content,
           importance: input.importance ?? 0.5,
@@ -165,6 +180,7 @@ export class MemoryEngine {
 
     const results: SearchResult[] = vecResults
       .filter(m => {
+        if (options.namespace && (m.namespace ?? 'general') !== options.namespace) return false;
         if (options.type && m.type !== options.type) return false;
         if (options.minImportance && m.importance < options.minImportance) return false;
         if (options.tags?.length) {
@@ -231,6 +247,7 @@ export class MemoryEngine {
     const tbl = await this.table();
     const now = new Date().toISOString();
     const content = updates.content ?? existing.content;
+    const namespace = updates.namespace ?? existing.namespace;
     const type = updates.type ?? existing.type;
     const importance = updates.importance ?? existing.importance;
     const tags = updates.tags ?? existing.tags;
@@ -241,6 +258,7 @@ export class MemoryEngine {
 
     await tbl.add([{
       id,
+      namespace,
       type,
       content,
       importance,
@@ -281,12 +299,15 @@ export class MemoryEngine {
     try { rows = await tbl.query().toArray(); } catch { rows = []; }
 
     const byType: Record<string, number> = {};
+    const byNamespace: Record<string, number> = {};
     let oldest: string | null = null;
     let newest: string | null = null;
 
     for (const r of rows) {
       const t = r.type as string;
       byType[t] = (byType[t] ?? 0) + 1;
+      const ns = (r.namespace as string) || 'general';
+      byNamespace[ns] = (byNamespace[ns] ?? 0) + 1;
       if (!oldest || r.created_at < oldest) oldest = r.created_at;
       if (!newest || r.created_at > newest) newest = r.created_at;
     }
@@ -305,7 +326,7 @@ export class MemoryEngine {
       dbSizeBytes = calcSize(this.dbPath);
     } catch { /* */ }
 
-    return { totalMemories: rows.length, byType, dbSizeBytes, oldestMemory: oldest, newestMemory: newest };
+    return { totalMemories: rows.length, byType, byNamespace, dbSizeBytes, oldestMemory: oldest, newestMemory: newest };
   }
 
   /** Get top memories by access count and importance for reflection */
@@ -314,6 +335,198 @@ export class MemoryEngine {
     const byAccess = [...all].sort((a, b) => b.accessCount - a.accessCount).slice(0, 10);
     const byImportance = [...all].sort((a, b) => b.importance - a.importance).slice(0, 10);
     return { mostAccessed: byAccess, highestImportance: byImportance };
+  }
+
+  /** Apply decay: reduce importance of unaccessed memories over time */
+  async decay(options: { dryRun?: boolean; halfLifeDays?: number; minImportance?: number }): Promise<{ affected: Array<{ id: string; content: string; oldImportance: number; newImportance: number }> }> {
+    const halfLife = options.halfLifeDays ?? 30;
+    const minImp = options.minImportance ?? 0.05;
+    const all = await this.getAll();
+    const now = Date.now();
+    const affected: Array<{ id: string; content: string; oldImportance: number; newImportance: number }> = [];
+
+    for (const m of all) {
+      const daysSinceAccess = (now - new Date(m.accessedAt).getTime()) / (1000 * 60 * 60 * 24);
+      if (daysSinceAccess < 7) continue; // Skip recently accessed
+      const decayFactor = Math.exp(-0.693 * daysSinceAccess / halfLife);
+      const newImportance = Math.max(minImp, +(m.importance * decayFactor).toFixed(3));
+      if (newImportance < m.importance - 0.01) {
+        affected.push({ id: m.id, content: m.content, oldImportance: m.importance, newImportance });
+      }
+    }
+
+    if (!options.dryRun) {
+      const tbl = await this.table();
+      for (const a of affected) {
+        try {
+          await tbl.update({ where: `id = '${a.id}'`, values: { importance: a.newImportance + '' } });
+        } catch { /* ignore */ }
+      }
+    }
+
+    return { affected };
+  }
+
+  /** Consolidate similar memories into summaries */
+  async consolidate(options: { dryRun?: boolean; similarityThreshold?: number; minClusterSize?: number }): Promise<{ clusters: Array<{ ids: string[]; contents: string[] }> }> {
+    const threshold = options.similarityThreshold ?? 0.85;
+    const minSize = options.minClusterSize ?? 2;
+    const tbl = await this.table();
+    const all = await this.getAll();
+    if (all.length < minSize) return { clusters: [] };
+
+    // Get embeddings for all memories
+    const rows = await tbl.query().toArray();
+    const idToVector = new Map<string, number[]>();
+    for (const r of rows) {
+      idToVector.set(r.id, Array.from(r.vector as Float32Array));
+    }
+
+    // Find clusters using greedy approach
+    const used = new Set<string>();
+    const clusters: Array<{ ids: string[]; contents: string[]; namespaces: string[] }> = [];
+
+    for (const m of all) {
+      if (used.has(m.id)) continue;
+      const vec = idToVector.get(m.id);
+      if (!vec) continue;
+
+      const cluster = [m];
+      used.add(m.id);
+
+      for (const other of all) {
+        if (used.has(other.id)) continue;
+        const otherVec = idToVector.get(other.id);
+        if (!otherVec) continue;
+
+        const sim = cosineSimilarity(vec, otherVec);
+        if (sim >= threshold) {
+          cluster.push(other);
+          used.add(other.id);
+        }
+      }
+
+      if (cluster.length >= minSize) {
+        clusters.push({
+          ids: cluster.map(c => c.id),
+          contents: cluster.map(c => c.content),
+          namespaces: cluster.map(c => c.namespace),
+        });
+      }
+    }
+
+    if (!options.dryRun) {
+      for (const cluster of clusters) {
+        // Create consolidated memory
+        const combined = cluster.contents.join('\n---\n');
+        const summaryContent = combined.length > 500
+          ? combined.slice(0, 500) + `\n[consolidated from ${cluster.ids.length} memories]`
+          : combined;
+        const ns = cluster.namespaces[0] || 'general';
+        await this.save({
+          content: summaryContent,
+          namespace: ns,
+          type: 'semantic',
+          importance: 0.7,
+          source: 'consolidation',
+          metadata: { supersededIds: cluster.ids },
+        });
+        // Delete originals
+        await this.deleteBatch(cluster.ids);
+      }
+    }
+
+    return { clusters: clusters.map(c => ({ ids: c.ids, contents: c.contents })) };
+  }
+
+  /** Audit: find duplicates, orphans, stale memories */
+  async audit(): Promise<{
+    duplicates: Array<{ ids: string[]; similarity: number; content: string }>;
+    stale: Memory[];
+    namespaceDistribution: Record<string, number>;
+    totalMemories: number;
+  }> {
+    const tbl = await this.table();
+    const all = await this.getAll();
+    const rows = await tbl.query().toArray();
+    const idToVector = new Map<string, number[]>();
+    for (const r of rows) {
+      idToVector.set(r.id, Array.from(r.vector as Float32Array));
+    }
+
+    // Find near-duplicates (cosine sim > 0.95)
+    const duplicates: Array<{ ids: string[]; similarity: number; content: string }> = [];
+    const dupSeen = new Set<string>();
+    for (let i = 0; i < all.length; i++) {
+      if (dupSeen.has(all[i].id)) continue;
+      const vec = idToVector.get(all[i].id);
+      if (!vec) continue;
+      for (let j = i + 1; j < all.length; j++) {
+        if (dupSeen.has(all[j].id)) continue;
+        const otherVec = idToVector.get(all[j].id);
+        if (!otherVec) continue;
+        const sim = cosineSimilarity(vec, otherVec);
+        if (sim > 0.95) {
+          duplicates.push({ ids: [all[i].id, all[j].id], similarity: sim, content: all[i].content.slice(0, 80) });
+          dupSeen.add(all[j].id);
+        }
+      }
+    }
+
+    // Stale: not accessed in 60+ days, low importance
+    const now = Date.now();
+    const stale = all.filter(m => {
+      const daysSince = (now - new Date(m.accessedAt).getTime()) / (1000 * 60 * 60 * 24);
+      return daysSince > 60 && m.importance < 0.4;
+    });
+
+    const namespaceDistribution: Record<string, number> = {};
+    for (const m of all) {
+      const ns = m.namespace || 'general';
+      namespaceDistribution[ns] = (namespaceDistribution[ns] ?? 0) + 1;
+    }
+
+    return { duplicates, stale, namespaceDistribution, totalMemories: all.length };
+  }
+
+  /** Health check: overall brain metrics */
+  async health(): Promise<{
+    totalMemories: number;
+    dbSizeBytes: number;
+    namespaceBalance: Record<string, number>;
+    avgImportance: number;
+    staleCount: number;
+    duplicateCount: number;
+    oldestAccess: string | null;
+    newestAccess: string | null;
+  }> {
+    const stats = await this.stats();
+    const all = await this.getAll();
+    const now = Date.now();
+
+    const avgImportance = all.length > 0 ? all.reduce((s, m) => s + m.importance, 0) / all.length : 0;
+    const staleCount = all.filter(m => {
+      const daysSince = (now - new Date(m.accessedAt).getTime()) / (1000 * 60 * 60 * 24);
+      return daysSince > 60 && m.importance < 0.4;
+    }).length;
+
+    let oldestAccess: string | null = null;
+    let newestAccess: string | null = null;
+    for (const m of all) {
+      if (!oldestAccess || m.accessedAt < oldestAccess) oldestAccess = m.accessedAt;
+      if (!newestAccess || m.accessedAt > newestAccess) newestAccess = m.accessedAt;
+    }
+
+    return {
+      totalMemories: stats.totalMemories,
+      dbSizeBytes: stats.dbSizeBytes,
+      namespaceBalance: stats.byNamespace,
+      avgImportance: +avgImportance.toFixed(3),
+      staleCount,
+      duplicateCount: 0, // Computed on-demand via audit
+      oldestAccess,
+      newestAccess,
+    };
   }
 
   close(): void {
@@ -329,6 +542,7 @@ export class MemoryEngine {
 
     return {
       id: row.id,
+      namespace: row.namespace ?? 'general',
       type: row.type,
       content: row.content,
       embedding: null,

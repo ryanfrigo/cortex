@@ -1,6 +1,6 @@
 {
   "name": "cortex-memory",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local-first AI memory layer with hybrid vector + full-text retrieval. No API keys needed. Built-in MCP server for Claude, Cursor, and OpenClaw.",
   "license": "MIT",
   "type": "module",

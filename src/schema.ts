@@ -15,12 +15,28 @@ export async function initDatabase(dbPath: string): Promise<Connection> {
 export async function getOrCreateTable(db: Connection): Promise<Table> {
   const tableNames = await db.tableNames();
   if (tableNames.includes('memories')) {
-    return db.openTable('memories');
+    const table = await db.openTable('memories');
+    // Migration: add namespace column if missing
+    try {
+      const schema = await table.schema();
+      const fieldNames = schema.fields.map((f: any) => f.name);
+      if (!fieldNames.includes('namespace')) {
+        // Add namespace column by updating all rows
+        await table.addColumns([{ name: 'namespace', valueSql: "'general'" }]);
+      }
+    } catch {
+      // If schema introspection fails, try adding column anyway
+      try {
+        await table.addColumns([{ name: 'namespace', valueSql: "'general'" }]);
+      } catch { /* column may already exist */ }
+    }
+    return table;
   }
   // Create with a dummy record then delete it
   const table = await db.createTable('memories', [
     {
       id: '__init__',
+      namespace: 'general',
       type: 'semantic',
       content: 'init',
       importance: 0.5,

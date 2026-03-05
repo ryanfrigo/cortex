@@ -12,7 +12,7 @@ const ALL_TYPES = ['episodic', 'semantic', 'procedural', 'decision', 'lesson', '
 const engine = new MemoryEngine();
 
 const server = new Server(
-  { name: 'cortex-memory', version: '0.2.0' },
+  { name: 'cortex-memory', version: '0.3.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -25,6 +25,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: 'object' as const,
         properties: {
           content: { type: 'string', description: 'The memory content to save' },
+          namespace: { type: 'string', description: 'Brain region namespace (health, projects/*, personal, daily, learnings, people, general)' },
           type: { type: 'string', enum: ALL_TYPES, description: 'Memory type' },
           importance: { type: 'number', description: 'Importance from 0.0 to 1.0 (default 0.5)' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Tags for categorization' },
@@ -49,6 +50,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: 'object' as const,
         properties: {
           query: { type: 'string', description: 'Search query' },
+          namespace: { type: 'string', description: 'Filter by namespace' },
           limit: { type: 'number', description: 'Max results (default 5)' },
           type: { type: 'string', enum: ALL_TYPES, description: 'Filter by memory type' },
           project: { type: 'string', description: 'Filter by project name' },
@@ -95,6 +97,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const metadata: MemoryMetadata | undefined = args?.metadata as MemoryMetadata | undefined;
         const memory = await engine.save({
           content: args?.content as string,
+          namespace: (args?.namespace as string) ?? 'general',
           type: (args?.type as MemoryType) ?? 'semantic',
           importance: (args?.importance as number) ?? 0.5,
           tags: (args?.tags as string[]) ?? [],
@@ -109,6 +112,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'memory_search': {
         const results = await engine.search({
           query: args?.query as string,
+          namespace: args?.namespace as string | undefined,
           limit: (args?.limit as number) ?? 5,
           type: args?.type as MemoryType | undefined,
           project: args?.project as string | undefined,
@@ -132,7 +136,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const stats = await engine.stats();
         const lines = [
           `Total memories: ${stats.totalMemories}`,
+          'By type:',
           ...Object.entries(stats.byType).sort((a, b) => b[1] - a[1]).map(([t, c]) => `  ${t}: ${c}`),
+          'By namespace:',
+          ...Object.entries(stats.byNamespace).sort((a, b) => b[1] - a[1]).map(([ns, c]) => `  ${ns}: ${c}`),
           `DB size: ${(stats.dbSizeBytes / 1024).toFixed(1)} KB`,
           stats.oldestMemory ? `Oldest: ${stats.oldestMemory}` : null,
           stats.newestMemory ? `Newest: ${stats.newestMemory}` : null,
