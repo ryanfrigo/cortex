@@ -41,7 +41,10 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "start:mcp": "node dist/mcp-server.js"
+    "start:mcp": "node dist/mcp-server.js",
+    "test": "vitest run",
+    "bench": "tsx bench/recall-benchmark.ts",
+    "bench:regression": "tsx bench/regression-check.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
@@ -54,7 +57,9 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/uuid": "^10.0.0",
-    "typescript": "^5.7.0"
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.18"
   },
   "engines": {
     "node": ">=18"
