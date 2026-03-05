@@ -1,11 +1,13 @@
 # Cortex 🧠
 
-**Local-first AI memory layer with hybrid retrieval. No API keys needed.**
+**Local-first AI memory layer with hybrid retrieval and brain-inspired namespaces. No API keys needed.**
 
 [![npm version](https://img.shields.io/npm/v/cortex-memory)](https://www.npmjs.com/package/cortex-memory)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 Give your AI agent persistent memory that runs entirely on your machine. Cortex combines vector similarity, full-text search, recency, and importance scoring into a single embedded database — no cloud services, no API keys, no monthly bills.
+
+**v0.3.0**: Namespaced collections (brain regions), memory decay, consolidation, audit & health commands.
 
 ## Quick Start (2 minutes)
 
@@ -13,17 +15,22 @@ Give your AI agent persistent memory that runs entirely on your machine. Cortex 
 # Install globally
 npm install -g cortex-memory
 
-# Save your first memory
-cortex save "I prefer TypeScript over JavaScript"
+# Save memories to brain regions
+cortex save "I prefer TypeScript over JavaScript" --namespace learnings
+cortex save "Ran 5k in 24:30" --namespace health
+cortex save "Sarah prefers async communication" --namespace people
 
-# Search it back
+# Search within a namespace
+cortex search "programming languages" --namespace learnings
+
+# Search everything
 cortex search "programming languages"
-# → [score: 0.847] I prefer TypeScript over JavaScript
 
 # Ingest a folder of notes
-cortex ingest ~/notes --recursive
+cortex ingest ~/notes --recursive --namespace daily
 
-# Check status
+# Check brain health
+cortex health
 cortex status
 ```
 
@@ -48,15 +55,57 @@ npm install -g cortex-memory
 
 Requires Node.js 18+. First run downloads the embedding model (~30MB) automatically.
 
+## Namespaces (Brain Regions)
+
+Organize memories into namespaces — like brain regions for different types of knowledge:
+
+| Namespace | Purpose |
+|-----------|---------|
+| `health` | Food, workouts, sleep, body metrics |
+| `projects/*` | Per-project memories (e.g. `projects/myapp`) |
+| `personal` | Relationships, reflections, plans |
+| `daily` | Raw daily logs |
+| `learnings` | Mistakes, corrections, patterns |
+| `people` | Info about specific people |
+| `general` | Default / uncategorized |
+
+```bash
+cortex save "Ran 5k in 24:30" --namespace health
+cortex search "running times" --namespace health
+cortex export --namespace people
+```
+
+## Memory Maintenance
+
+### Decay
+Memories that haven't been accessed lose importance over time (configurable half-life):
+```bash
+cortex decay --dry-run              # Preview what would decay
+cortex decay --apply --half-life 30 # Apply with 30-day half-life
+```
+
+### Consolidation
+Merge similar memories into summaries (like sleep consolidating episodic → semantic memory):
+```bash
+cortex consolidate --dry-run        # Find clusters
+cortex consolidate --apply          # Merge and summarize
+```
+
+### Audit & Health
+```bash
+cortex audit    # Find duplicates (cosine sim > 0.95), stale memories, namespace distribution
+cortex health   # Overall brain health: namespace balance, avg importance, staleness
+```
+
 ## CLI Reference
 
 ### Save Memories
 
 ```bash
-cortex save "I prefer TypeScript over JavaScript"
+cortex save "I prefer TypeScript over JavaScript" --namespace learnings
 cortex save "Deploy with Vercel" --type procedural --tags "deploy,vercel"
 cortex save "Had a great meeting with the team" --type episodic -i 0.8
-cortex save "Use pnpm for monorepos" --project myapp
+cortex save "Use pnpm for monorepos" --project myapp --namespace projects/myapp
 ```
 
 ### Search (Hybrid Retrieval)
@@ -65,7 +114,7 @@ cortex save "Use pnpm for monorepos" --project myapp
 cortex search "what programming languages"
 cortex search "deployment" --type procedural --limit 3
 cortex search "meeting notes" --min-importance 0.7
-cortex search "database setup" --project myapp
+cortex search "database setup" --project myapp --namespace projects/myapp
 ```
 
 ### Ingest Files & Folders

@@ -4,11 +4,13 @@ export interface MemoryMetadata {
   project?: string;      // e.g. "myapp", "kalshi", "market"
   confidence?: number;   // 0-1, how verified is this
   supersedes?: string;   // ID of memory this replaces
+  supersededIds?: string[]; // IDs of memories this consolidation replaces
   expiresAt?: string;    // ISO 8601, for time-bound facts
 }
 
 export interface Memory {
   id: string;
+  namespace: string;    // brain region: health, projects/*, personal, daily, learnings, people
   type: MemoryType;
   content: string;
   embedding: Float32Array | null;
@@ -24,6 +26,7 @@ export interface Memory {
 
 export interface MemoryInput {
   content: string;
+  namespace?: string;
   type?: MemoryType;
   importance?: number;
   source?: string;
@@ -33,6 +36,7 @@ export interface MemoryInput {
 
 export interface SearchOptions {
   query: string;
+  namespace?: string;
   limit?: number;
   type?: MemoryType;
   tags?: string[];
@@ -52,6 +56,7 @@ export interface SearchResult {
 export interface MemoryStats {
   totalMemories: number;
   byType: Record<string, number>;
+  byNamespace: Record<string, number>;
   dbSizeBytes: number;
   oldestMemory: string | null;
   newestMemory: string | null;

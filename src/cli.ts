@@ -12,7 +12,7 @@ const program = new Command();
 program
   .name('cortex')
   .description('Local-first AI memory layer')
-  .version('0.2.0');
+  .version('0.3.0');
 
 program
   .command('save')
@@ -23,11 +23,13 @@ program
   .option('--tags <tags>', 'Comma-separated tags')
   .option('-s, --source <source>', 'Source identifier', 'cli')
   .option('--project <project>', 'Project name for metadata')
+  .option('--namespace <ns>', 'Brain region namespace', 'general')
   .action(async (content: string, opts) => {
     const engine = new MemoryEngine();
     try {
       const memory = await engine.save({
         content,
+        namespace: opts.namespace,
         type: opts.type as MemoryType,
         importance: parseFloat(opts.importance),
         source: opts.source,
@@ -35,7 +37,7 @@ program
         metadata: opts.project ? { project: opts.project } : undefined,
       });
       console.log(`✓ Saved memory ${memory.id.slice(0, 8)}`);
-      console.log(`  Type: ${memory.type} | Importance: ${memory.importance}`);
+      console.log(`  Namespace: ${memory.namespace} | Type: ${memory.type} | Importance: ${memory.importance}`);
     } catch (err) {
       console.error('Error saving memory:', (err as Error).message);
       process.exit(1);
@@ -52,11 +54,13 @@ program
   .option('-t, --type <type>', 'Filter by type')
   .option('--min-importance <n>', 'Minimum importance')
   .option('--project <project>', 'Filter by project')
+  .option('--namespace <ns>', 'Filter by namespace')
   .action(async (query: string, opts) => {
     const engine = new MemoryEngine();
     try {
       const results = await engine.search({
         query,
+        namespace: opts.namespace,
         limit: parseInt(opts.limit),
         type: opts.type as MemoryType | undefined,
         minImportance: opts.minImportance ? parseFloat(opts.minImportance) : undefined,
@@ -70,7 +74,7 @@ program
 
       console.log(`Found ${results.length} memories:\n`);
       for (const r of results) {
-        console.log(`[${r.memory.id.slice(0, 8)}] (score: ${r.score.toFixed(3)}) ${r.memory.type}`);
+        console.log(`[${r.memory.id.slice(0, 8)}] (score: ${r.score.toFixed(3)}) ${r.memory.namespace}/${r.memory.type}`);
         console.log(`  ${r.memory.content}`);
         if (r.memory.tags.length) console.log(`  Tags: ${r.memory.tags.join(', ')}`);
         if (r.memory.metadata?.project) console.log(`  Project: ${r.memory.metadata.project}`);
@@ -113,10 +117,15 @@ program
       console.log('Cortex Memory Status');
       console.log('====================');
       console.log(`Total memories: ${stats.totalMemories}`);
+      console.log('\nBy Type:');
       for (const [type, count] of Object.entries(stats.byType).sort((a, b) => b[1] - a[1])) {
         console.log(`  ${type}: ${count}`);
       }
-      console.log(`DB size: ${(stats.dbSizeBytes / 1024).toFixed(1)} KB`);
+      console.log('\nBy Namespace:');
+      for (const [ns, count] of Object.entries(stats.byNamespace).sort((a, b) => b[1] - a[1])) {
+        console.log(`  ${ns}: ${count}`);
+      }
+      console.log(`\nDB size: ${(stats.dbSizeBytes / 1024).toFixed(1)} KB`);
       if (stats.oldestMemory) console.log(`Oldest: ${stats.oldestMemory}`);
       if (stats.newestMemory) console.log(`Newest: ${stats.newestMemory}`);
     } finally {
@@ -130,13 +139,14 @@ program
   .argument('<file>', 'Path to markdown file')
   .option('--no-dedup', 'Disable content-hash deduplication')
   .option('--smart', 'Use high-signal extraction (looks for Decision:, Lesson:, etc.)')
-  .action(async (file: string, opts: { dedup: boolean; smart?: boolean }) => {
+  .option('--namespace <ns>', 'Assign namespace to imported memories', 'general')
+  .action(async (file: string, opts: { dedup: boolean; smart?: boolean; namespace?: string }) => {
     const engine = new MemoryEngine();
     try {
       const parsed = opts.smart ? parseMarkdownFileSmart(file) : parseMarkdownFile(file);
       console.log(`Parsed ${parsed.length} memories from ${file}${opts.smart ? ' (smart mode)' : ''}`);
 
-      const count = await engine.saveBatch(parsed.map(p => p.input), opts.dedup);
+      const count = await engine.saveBatch(parsed.map(p => ({ ...p.input, namespace: opts.namespace })), opts.dedup);
       console.log(`\n✓ Imported ${count} memories`);
     } catch (err) {
       console.error('Error importing:', (err as Error).message);
@@ -202,6 +212,7 @@ program
   .description('Export filtered memories as markdown')
   .option('-t, --type <type>', 'Filter by memory type')
   .option('--project <project>', 'Filter by project')
+  .option('--namespace <ns>', 'Filter by namespace')
   .option('-n, --limit <n>', 'Max memories to export', '50')
   .action(async (opts) => {
     const engine = new MemoryEngine();
@@ -209,6 +220,9 @@ program
       const all = await engine.getAll();
       let filtered = all;
 
+      if (opts.namespace) {
+        filtered = filtered.filter(m => m.namespace === opts.namespace);
+      }
       if (opts.type) {
         filtered = filtered.filter(m => m.type === opts.type);
       }
@@ -245,6 +259,7 @@ program
   .option('--smart', 'Use high-signal extraction (Decision:, Lesson:, etc.)')
   .option('--no-dedup', 'Disable content-hash deduplication')
   .option('--ext <extensions>', 'Comma-separated file extensions to include', '.md,.txt,.markdown')
+  .option('--namespace <ns>', 'Assign namespace to ingested memories', 'general')
   .action(async (folder: string, opts) => {
     const engine = new MemoryEngine();
     try {
@@ -275,7 +290,8 @@ program
       for (const file of files) {
         const parsed = opts.smart ? parseMarkdownFileSmart(file) : parseMarkdownFile(file);
         if (parsed.length === 0) continue;
-        const count = await engine.saveBatch(parsed.map(p => p.input), opts.dedup);
+        const inputs = parsed.map(p => ({ ...p.input, namespace: opts.namespace }));
+        const count = await engine.saveBatch(inputs, opts.dedup);
         totalMemories += count;
         console.log(`  ${file}: ${count} memories`);
       }
@@ -305,6 +321,132 @@ program
     } catch (err) {
       console.error('Error ingesting sessions:', (err as Error).message);
       process.exit(1);
+    }
+  });
+
+program
+  .command('decay')
+  .description('Apply memory decay to unaccessed memories')
+  .option('--dry-run', 'Show what would be affected without changing anything')
+  .option('--apply', 'Actually adjust importance scores')
+  .option('--half-life <days>', 'Half-life in days for decay', '30')
+  .action(async (opts) => {
+    if (!opts.dryRun && !opts.apply) {
+      console.log('Specify --dry-run or --apply');
+      process.exit(1);
+    }
+    const engine = new MemoryEngine();
+    try {
+      const result = await engine.decay({
+        dryRun: opts.dryRun,
+        halfLifeDays: parseInt(opts.halfLife),
+      });
+      if (result.affected.length === 0) {
+        console.log('No memories need decay adjustment.');
+        return;
+      }
+      console.log(`${opts.dryRun ? 'Would affect' : 'Affected'} ${result.affected.length} memories:\n`);
+      for (const a of result.affected.slice(0, 20)) {
+        console.log(`  [${a.id.slice(0, 8)}] ${a.oldImportance.toFixed(2)} → ${a.newImportance.toFixed(2)} | ${a.content.slice(0, 60)}`);
+      }
+      if (result.affected.length > 20) console.log(`  ... and ${result.affected.length - 20} more`);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('consolidate')
+  .description('Consolidate similar memories into summaries')
+  .option('--dry-run', 'Show clusters without merging')
+  .option('--apply', 'Actually merge similar memories')
+  .option('--threshold <n>', 'Cosine similarity threshold', '0.85')
+  .option('--min-cluster <n>', 'Minimum cluster size', '2')
+  .action(async (opts) => {
+    if (!opts.dryRun && !opts.apply) {
+      console.log('Specify --dry-run or --apply');
+      process.exit(1);
+    }
+    const engine = new MemoryEngine();
+    try {
+      const result = await engine.consolidate({
+        dryRun: opts.dryRun,
+        similarityThreshold: parseFloat(opts.threshold),
+        minClusterSize: parseInt(opts.minCluster),
+      });
+      if (result.clusters.length === 0) {
+        console.log('No clusters found for consolidation.');
+        return;
+      }
+      console.log(`${opts.dryRun ? 'Would consolidate' : 'Consolidated'} ${result.clusters.length} clusters:\n`);
+      for (const c of result.clusters) {
+        console.log(`  Cluster (${c.ids.length} memories):`);
+        for (const content of c.contents.slice(0, 3)) {
+          console.log(`    - ${content.slice(0, 70)}`);
+        }
+        if (c.contents.length > 3) console.log(`    ... and ${c.contents.length - 3} more`);
+        console.log();
+      }
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('audit')
+  .description('Audit memory database for issues')
+  .action(async () => {
+    const engine = new MemoryEngine();
+    try {
+      console.log('Running audit...\n');
+      const result = await engine.audit();
+
+      console.log(`Total memories: ${result.totalMemories}`);
+      console.log(`\nNamespace Distribution:`);
+      for (const [ns, count] of Object.entries(result.namespaceDistribution).sort((a, b) => b[1] - a[1])) {
+        const pct = ((count / result.totalMemories) * 100).toFixed(1);
+        console.log(`  ${ns}: ${count} (${pct}%)`);
+      }
+
+      console.log(`\nDuplicates (cosine sim > 0.95): ${result.duplicates.length}`);
+      for (const d of result.duplicates.slice(0, 10)) {
+        console.log(`  [${d.ids.map(id => id.slice(0, 8)).join(', ')}] sim=${d.similarity.toFixed(3)} | ${d.content}`);
+      }
+      if (result.duplicates.length > 10) console.log(`  ... and ${result.duplicates.length - 10} more`);
+
+      console.log(`\nStale memories (60+ days, low importance): ${result.stale.length}`);
+      for (const m of result.stale.slice(0, 10)) {
+        console.log(`  [${m.id.slice(0, 8)}] imp=${m.importance} | ${m.content.slice(0, 60)}`);
+      }
+      if (result.stale.length > 10) console.log(`  ... and ${result.stale.length - 10} more`);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('health')
+  .description('Overall brain health metrics')
+  .action(async () => {
+    const engine = new MemoryEngine();
+    try {
+      const h = await engine.health();
+      console.log('🧠 Cortex Brain Health');
+      console.log('======================');
+      console.log(`Total memories: ${h.totalMemories}`);
+      console.log(`DB size: ${(h.dbSizeBytes / 1024).toFixed(1)} KB`);
+      console.log(`Average importance: ${h.avgImportance}`);
+      console.log(`Stale memories: ${h.staleCount}`);
+      console.log();
+      console.log('Namespace Balance:');
+      for (const [ns, count] of Object.entries(h.namespaceBalance).sort((a, b) => b[1] - a[1])) {
+        const bar = '█'.repeat(Math.max(1, Math.round(count / Math.max(...Object.values(h.namespaceBalance)) * 20)));
+        console.log(`  ${ns.padEnd(20)} ${bar} ${count}`);
+      }
+      if (h.oldestAccess) console.log(`\nOldest access: ${h.oldestAccess}`);
+      if (h.newestAccess) console.log(`Newest access: ${h.newestAccess}`);
+    } finally {
+      engine.close();
     }
   });
 
