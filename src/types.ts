@@ -6,6 +6,13 @@ export interface MemoryMetadata {
   supersedes?: string;   // ID of memory this replaces
   supersededIds?: string[]; // IDs of memories this consolidation replaces
   expiresAt?: string;    // ISO 8601, for time-bound facts
+  // Session ingestion metadata
+  files?: string[];       // File paths referenced
+  urls?: string[];        // URLs referenced
+  commits?: string[];     // Git commit hashes
+  deployed?: boolean;     // Whether deployment was involved
+  isSummary?: boolean;    // Session summary memory
+  exchangeCount?: number; // Number of exchanges in session
 }
 
 export interface Memory {

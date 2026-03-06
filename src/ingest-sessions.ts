@@ -202,16 +202,35 @@ export async function ingestSessions(opts: { force?: boolean; limit?: number; ve
         continue;
       }
 
-      const inputs: MemoryInput[] = substantive.map(ex => ({
-        content: exchangeToMemoryContent(ex, sessionId),
-        type: 'session' as MemoryType,
-        importance: scoreImportance(ex),
-        source: `session:${sessionId}`,
-        tags: ['session', 'transcript'],
-        metadata: {
-          project: extractProject(ex.userMessage + ' ' + ex.assistantMessage),
-        },
-      }));
+      const inputs: MemoryInput[] = substantive.map(ex => {
+        const fullText = ex.userMessage + ' ' + ex.assistantMessage;
+        const meta = extractMetadata(fullText);
+        return {
+          content: exchangeToMemoryContent(ex, sessionId),
+          type: 'session' as MemoryType,
+          importance: scoreImportance(ex),
+          source: `session:${sessionId}`,
+          tags: ['session', 'transcript'],
+          metadata: meta,
+        };
+      });
+
+      // Add session summary for multi-turn sessions
+      const summary = generateSessionSummary(substantive, sessionId);
+      if (summary) {
+        inputs.push({
+          content: summary,
+          type: 'session' as MemoryType,
+          importance: 0.6,
+          source: `session:${sessionId}:summary`,
+          tags: ['session', 'summary'],
+          metadata: {
+            project: extractProject(summary),
+            isSummary: true,
+            exchangeCount: substantive.length,
+          },
+        });
+      }
 
       allInputs.push(...inputs);
       ingestedSet.add(file.id);
@@ -248,6 +267,72 @@ function extractProject(text: string): string | undefined {
     if (lower.includes(p)) return p;
   }
   return undefined;
+}
+
+/** Extract structured metadata from exchange text for richer search */
+function extractMetadata(text: string): Record<string, any> {
+  const meta: Record<string, any> = {};
+
+  // Extract file paths (e.g. src/foo.ts, ~/dev/bar.py, /Users/...)
+  const filePaths = [...new Set(
+    (text.match(/(?:[\w~.]\/)?(?:[\w.-]+\/)+[\w.-]+\.\w{1,10}/g) || [])
+      .filter(p => !p.startsWith('http') && !p.includes('@'))
+      .slice(0, 10)
+  )];
+  if (filePaths.length) meta.files = filePaths;
+
+  // Extract URLs
+  const urls = [...new Set(
+    (text.match(/https?:\/\/[^\s"'<>\]){},]+/g) || []).slice(0, 5)
+  )];
+  if (urls.length) meta.urls = urls;
+
+  // Extract git commits
+  const commits = [...new Set(
+    (text.match(/\b[0-9a-f]{7,40}\b/g) || [])
+      .filter(h => h.length >= 7 && h.length <= 40 && !/^\d+$/.test(h))
+      .slice(0, 5)
+  )];
+  if (commits.length) meta.commits = commits;
+
+  // Detect deployment signals
+  const deploySignals = ['deployed', 'pushed to prod', 'live on', 'shipped to', 'vercel', 'git push'];
+  if (deploySignals.some(s => text.toLowerCase().includes(s))) {
+    meta.deployed = true;
+  }
+
+  // Extract project
+  const project = extractProject(text);
+  if (project) meta.project = project;
+
+  return meta;
+}
+
+/** Generate a summary memory for sessions with many exchanges */
+function generateSessionSummary(exchanges: ConversationExchange[], sessionId: string): string | null {
+  if (exchanges.length < 3) return null;
+
+  // Collect key signals across all exchanges
+  const allTools = new Set<string>();
+  const allProjects = new Set<string>();
+  const topics: string[] = [];
+
+  for (const ex of exchanges) {
+    ex.toolCalls.forEach(t => allTools.add(t));
+    const proj = extractProject(ex.userMessage + ' ' + ex.assistantMessage);
+    if (proj) allProjects.add(proj);
+
+    // First 100 chars of user message as topic hint
+    const topic = ex.userMessage.slice(0, 100).replace(/\n/g, ' ').trim();
+    if (topic.length > 15) topics.push(topic);
+  }
+
+  const parts = [`Session ${sessionId.slice(0, 8)} — ${exchanges.length} exchanges`];
+  if (allProjects.size > 0) parts.push(`Projects: ${[...allProjects].join(', ')}`);
+  if (allTools.size > 0) parts.push(`Tools: ${[...allTools].slice(0, 10).join(', ')}`);
+  if (topics.length > 0) parts.push(`Topics:\n${topics.slice(0, 8).map(t => `- ${t}`).join('\n')}`);
+
+  return parts.join('\n');
 }
 
 /** Score exchange importance based on content signals (0.2 - 0.9) */
