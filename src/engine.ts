@@ -227,7 +227,14 @@ export class MemoryEngine {
   async get(id: string): Promise<Memory | null> {
     const tbl = await this.table();
     try {
-      const results = await tbl.query().where(`id = '${id}'`).limit(1).toArray();
+      let results: any[];
+      if (id.length === 36) {
+        // Full UUID — exact match
+        results = await tbl.query().where(`id = '${id}'`).limit(1).toArray();
+      } else {
+        // Prefix match
+        results = await tbl.query().where(`id LIKE '${id}%'`).limit(1).toArray();
+      }
       return results.length > 0 ? this.rowToMemory(results[0]) : null;
     } catch { return null; }
   }
@@ -680,9 +687,15 @@ export class MemoryEngine {
     const staleThreshold = options?.staleAfterDays || 7;
     const now = Date.now();
     
-    let beliefs = await this.search({ query: '', type: 'belief', limit: 1000 });
-    let filtered = beliefs
-      .map(r => r.memory)
+    // Use direct table query instead of search (search needs a non-empty query for vectors)
+    const tbl = await this.table();
+    let allBeliefs: Memory[];
+    try {
+      const rows = await tbl.query().where("type = 'belief'").toArray();
+      allBeliefs = rows.map(r => this.rowToMemory(r));
+    } catch { allBeliefs = []; }
+    
+    let filtered = allBeliefs
       .filter(m => {
         const meta = m.metadata as any;
         if (meta?.status && meta.status !== 'active') return false;
