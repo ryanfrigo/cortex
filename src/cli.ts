@@ -330,6 +330,7 @@ program
   .option('--dry-run', 'Show what would be affected without changing anything')
   .option('--apply', 'Actually adjust importance scores')
   .option('--half-life <days>', 'Half-life in days for decay', '30')
+  .option('--batch-size <n>', 'Batch size for processing memories', '1000')
   .action(async (opts) => {
     if (!opts.dryRun && !opts.apply) {
       console.log('Specify --dry-run or --apply');
@@ -340,6 +341,7 @@ program
       const result = await engine.decay({
         dryRun: opts.dryRun,
         halfLifeDays: parseInt(opts.halfLife),
+        batchSize: parseInt(opts.batchSize),
       });
       if (result.affected.length === 0) {
         console.log('No memories need decay adjustment.');
@@ -362,6 +364,7 @@ program
   .option('--apply', 'Actually merge similar memories')
   .option('--threshold <n>', 'Cosine similarity threshold', '0.85')
   .option('--min-cluster <n>', 'Minimum cluster size', '2')
+  .option('--max-memories <n>', 'Max memories to process (performance limit)', '5000')
   .action(async (opts) => {
     if (!opts.dryRun && !opts.apply) {
       console.log('Specify --dry-run or --apply');
@@ -373,6 +376,7 @@ program
         dryRun: opts.dryRun,
         similarityThreshold: parseFloat(opts.threshold),
         minClusterSize: parseInt(opts.minCluster),
+        maxMemories: parseInt(opts.maxMemories),
       });
       if (result.clusters.length === 0) {
         console.log('No clusters found for consolidation.');
