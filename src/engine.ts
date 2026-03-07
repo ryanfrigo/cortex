@@ -278,11 +278,36 @@ export class MemoryEngine {
   async delete(id: string): Promise<boolean> {
     const tbl = await this.table();
     try {
-      const existing = await tbl.query().where(`id = '${id}'`).limit(1).toArray();
+      // Support both full ID and prefix matching
+      let existing: any[];
+      if (id.length === 36) {
+        // Full UUID, do exact match
+        existing = await tbl.query().where(`id = '${id}'`).limit(1).toArray();
+      } else {
+        // Prefix match - use SQL LIKE for efficiency instead of loading all memories
+        const pattern = `${id}%`;
+        existing = await tbl.query().where(`id LIKE '${pattern}'`).toArray();
+        
+        if (existing.length > 1) {
+          // Multiple matches found - this is ambiguous
+          console.error(`Ambiguous ID prefix '${id}' matches ${existing.length} memories:`);
+          for (const row of existing.slice(0, 5)) {
+            console.error(`  [${row.id.slice(0, 8)}] ${row.content.slice(0, 60)}`);
+          }
+          if (existing.length > 5) console.error(`  ... and ${existing.length - 5} more`);
+          return false;
+        }
+      }
+      
       if (existing.length === 0) return false;
-      await tbl.delete(`id = '${id}'`);
+      
+      const fullId = existing[0].id;
+      await tbl.delete(`id = '${fullId}'`);
       return true;
-    } catch { return false; }
+    } catch (error) {
+      console.error('Delete error:', error);
+      return false;
+    }
   }
 
   async deleteBatch(ids: string[]): Promise<number> {
@@ -338,29 +363,69 @@ export class MemoryEngine {
   }
 
   /** Apply decay: reduce importance of unaccessed memories over time */
-  async decay(options: { dryRun?: boolean; halfLifeDays?: number; minImportance?: number }): Promise<{ affected: Array<{ id: string; content: string; oldImportance: number; newImportance: number }> }> {
+  async decay(options: { dryRun?: boolean; halfLifeDays?: number; minImportance?: number; batchSize?: number }): Promise<{ affected: Array<{ id: string; content: string; oldImportance: number; newImportance: number }> }> {
     const halfLife = options.halfLifeDays ?? 30;
     const minImp = options.minImportance ?? 0.05;
-    const all = await this.getAll();
+    const batchSize = options.batchSize ?? 1000; // Process in batches to avoid memory issues
     const now = Date.now();
     const affected: Array<{ id: string; content: string; oldImportance: number; newImportance: number }> = [];
 
-    for (const m of all) {
-      const daysSinceAccess = (now - new Date(m.accessedAt).getTime()) / (1000 * 60 * 60 * 24);
-      if (daysSinceAccess < 7) continue; // Skip recently accessed
-      const decayFactor = Math.exp(-0.693 * daysSinceAccess / halfLife);
-      const newImportance = Math.max(minImp, +(m.importance * decayFactor).toFixed(3));
-      if (newImportance < m.importance - 0.01) {
-        affected.push({ id: m.id, content: m.content, oldImportance: m.importance, newImportance });
+    const tbl = await this.table();
+    let offset = 0;
+    let hasMore = true;
+    
+    console.log(`Processing memories in batches of ${batchSize}...`);
+    
+    while (hasMore) {
+      try {
+        // Get batch of raw rows to avoid heavy Memory object creation
+        const batch = await tbl.query().offset(offset).limit(batchSize).toArray();
+        hasMore = batch.length === batchSize;
+        offset += batchSize;
+        
+        if (batch.length === 0) break;
+        
+        console.log(`  Processing batch ${Math.floor(offset / batchSize)} (${batch.length} memories)`);
+
+        for (const row of batch) {
+          const daysSinceAccess = (now - new Date(row.accessed_at).getTime()) / (1000 * 60 * 60 * 24);
+          if (daysSinceAccess < 7) continue; // Skip recently accessed
+          
+          const decayFactor = Math.exp(-0.693 * daysSinceAccess / halfLife);
+          const newImportance = Math.max(minImp, +(row.importance * decayFactor).toFixed(3));
+          
+          if (newImportance < row.importance - 0.01) {
+            affected.push({ 
+              id: row.id, 
+              content: row.content, 
+              oldImportance: row.importance, 
+              newImportance 
+            });
+          }
+        }
+        
+        // Yield control to prevent blocking
+        if (offset % (batchSize * 5) === 0) {
+          await new Promise(resolve => setImmediate(resolve));
+        }
+      } catch (err) {
+        console.error(`Error processing batch at offset ${offset}:`, err);
+        break;
       }
     }
 
-    if (!options.dryRun) {
-      const tbl = await this.table();
-      for (const a of affected) {
-        try {
-          await tbl.update({ where: `id = '${a.id}'`, values: { importance: a.newImportance + '' } });
-        } catch { /* ignore */ }
+    if (!options.dryRun && affected.length > 0) {
+      console.log(`Updating ${affected.length} memories...`);
+      // Update in smaller batches to avoid overwhelming the database
+      const updateBatchSize = 100;
+      for (let i = 0; i < affected.length; i += updateBatchSize) {
+        const updateBatch = affected.slice(i, i + updateBatchSize);
+        for (const a of updateBatch) {
+          try {
+            await tbl.update({ where: `id = '${a.id}'`, values: { importance: a.newImportance + '' } });
+          } catch { /* ignore */ }
+        }
+        console.log(`  Updated ${Math.min(i + updateBatchSize, affected.length)}/${affected.length}`);
       }
     }
 
@@ -368,34 +433,61 @@ export class MemoryEngine {
   }
 
   /** Consolidate similar memories into summaries */
-  async consolidate(options: { dryRun?: boolean; similarityThreshold?: number; minClusterSize?: number }): Promise<{ clusters: Array<{ ids: string[]; contents: string[] }> }> {
+  async consolidate(options: { dryRun?: boolean; similarityThreshold?: number; minClusterSize?: number; maxMemories?: number }): Promise<{ clusters: Array<{ ids: string[]; contents: string[] }> }> {
     const threshold = options.similarityThreshold ?? 0.85;
     const minSize = options.minClusterSize ?? 2;
+    const maxMemories = options.maxMemories ?? 5000; // Limit to prevent O(n²) explosion
     const tbl = await this.table();
-    const all = await this.getAll();
-    if (all.length < minSize) return { clusters: [] };
+    
+    // Get a limited set of memories, prioritizing by importance
+    console.log(`Loading memories for consolidation (limit: ${maxMemories})...`);
+    const allRows = await tbl.query()
+      .select(['id', 'content', 'namespace', 'importance', 'vector'])
+      .toArray();
+    
+    // Sort by importance descending and take the top memories
+    const rows = allRows
+      .sort((a: any, b: any) => b.importance - a.importance)
+      .slice(0, maxMemories);
+      
+    if (rows.length < minSize) {
+      console.log(`Only ${rows.length} memories found, need at least ${minSize} for clustering`);
+      return { clusters: [] };
+    }
+    
+    console.log(`Processing ${rows.length} memories for similarity clustering...`);
 
-    // Get embeddings for all memories
-    const rows = await tbl.query().toArray();
+    // Build vector map from limited set
     const idToVector = new Map<string, number[]>();
+    const idToRow = new Map<string, any>();
     for (const r of rows) {
       idToVector.set(r.id, Array.from(r.vector as Float32Array));
+      idToRow.set(r.id, r);
     }
 
-    // Find clusters using greedy approach
+    // Find clusters using greedy approach with progress tracking
     const used = new Set<string>();
     const clusters: Array<{ ids: string[]; contents: string[]; namespaces: string[] }> = [];
+    let processed = 0;
 
-    for (const m of all) {
-      if (used.has(m.id)) continue;
-      const vec = idToVector.get(m.id);
+    for (const row of rows) {
+      if (used.has(row.id)) continue;
+      
+      processed++;
+      if (processed % 100 === 0) {
+        console.log(`  Processed ${processed}/${rows.length} memories...`);
+      }
+      
+      const vec = idToVector.get(row.id);
       if (!vec) continue;
 
-      const cluster = [m];
-      used.add(m.id);
+      const cluster = [row];
+      used.add(row.id);
 
-      for (const other of all) {
-        if (used.has(other.id)) continue;
+      // Only compare with remaining unused memories to avoid redundant work
+      const candidates = rows.filter((r: any) => !used.has(r.id) && r.id !== row.id);
+      
+      for (const other of candidates) {
         const otherVec = idToVector.get(other.id);
         if (!otherVec) continue;
 
@@ -412,6 +504,11 @@ export class MemoryEngine {
           contents: cluster.map(c => c.content),
           namespaces: cluster.map(c => c.namespace),
         });
+      }
+      
+      // Yield control periodically
+      if (processed % 50 === 0) {
+        await new Promise(resolve => setImmediate(resolve));
       }
     }
 
