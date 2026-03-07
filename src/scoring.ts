@@ -12,6 +12,9 @@ const WEIGHTS = {
 const TYPE_BOOSTS: Record<string, number> = {
   decision: 1.0,
   lesson: 1.0,
+  belief: 0.9,
+  reflection: 0.8,
+  shadow: 0.8,
   fact: 0.8,
   preference: 0.7,
   episodic: 0.5,
