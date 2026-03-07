@@ -4,7 +4,7 @@ import { createHash } from 'crypto';
 import { initDatabase, getDefaultDbPath, getOrCreateTable } from './schema.js';
 import { embed } from './embeddings.js';
 import { computeRecencyScore, computeHybridScore, normalizeBm25Scores } from './scoring.js';
-import type { Memory, MemoryInput, MemoryType, SearchOptions, SearchResult, MemoryStats, MemoryMetadata } from './types.js';
+import type { Memory, MemoryInput, MemoryType, SearchOptions, SearchResult, MemoryStats, MemoryMetadata, BeliefMetadata } from './types.js';
 import { statSync, readdirSync } from 'fs';
 import { join } from 'path';
 
@@ -624,6 +624,227 @@ export class MemoryEngine {
       oldestAccess,
       newestAccess,
     };
+  }
+
+  /** Save a belief with confidence tracking */
+  async saveBelief(statement: string, confidence: number, domain: string, options?: { tags?: string[]; evidence?: string[] }): Promise<Memory> {
+    const now = new Date().toISOString();
+    
+    // Check for similar existing beliefs (cosine sim > 0.9)
+    const existing = await this.search({ query: statement, type: 'belief', limit: 5 });
+    for (const result of existing) {
+      if (result.vectorScore > 0.9) {
+        // Update existing belief instead of creating new one
+        const beliefMeta = result.memory.metadata as any;
+        const updatedMetadata = {
+          ...beliefMeta,
+          confidence,
+          domain,
+          last_challenged: now,
+          history: [
+            ...(beliefMeta.history || []),
+            { date: now, confidence, reason: 'updated via saveBelief' }
+          ]
+        };
+        return await this.update(result.memory.id, {
+          metadata: updatedMetadata
+        }) || result.memory;
+      }
+    }
+
+    // Create new belief
+    const metadata = {
+      confidence,
+      domain,
+      evidence_for: options?.evidence || [],
+      evidence_against: [],
+      last_challenged: now,
+      times_confirmed: 0,
+      times_refuted: 0,
+      status: 'active' as const,
+      history: [{ date: now, confidence, reason: 'initial belief' }]
+    };
+
+    return await this.save({
+      content: statement,
+      type: 'belief',
+      importance: Math.max(0.6, confidence), // Beliefs have high baseline importance
+      source: 'belief-system',
+      tags: options?.tags || [],
+      metadata
+    });
+  }
+
+  /** Get all active beliefs, sorted by confidence desc */
+  async getBeliefs(options?: { domain?: string; staleAfterDays?: number }): Promise<Array<Memory & { isStale: boolean }>> {
+    const staleThreshold = options?.staleAfterDays || 7;
+    const now = Date.now();
+    
+    let beliefs = await this.search({ query: '', type: 'belief', limit: 1000 });
+    let filtered = beliefs
+      .map(r => r.memory)
+      .filter(m => {
+        const meta = m.metadata as any;
+        if (meta?.status && meta.status !== 'active') return false;
+        if (options?.domain && meta?.domain !== options.domain) return false;
+        return true;
+      });
+
+    // Check for staleness
+    return filtered.map(belief => {
+      const meta = belief.metadata as any;
+      const lastChallenged = meta?.last_challenged ? new Date(meta.last_challenged).getTime() : new Date(belief.createdAt).getTime();
+      const daysSince = (now - lastChallenged) / (1000 * 60 * 60 * 24);
+      
+      return {
+        ...belief,
+        isStale: daysSince > staleThreshold
+      };
+    }).sort((a, b) => {
+      const aConf = (a.metadata as any)?.confidence || 0;
+      const bConf = (b.metadata as any)?.confidence || 0;
+      return bConf - aConf;
+    });
+  }
+
+  /** Challenge a belief — find contradicting memories */
+  async challengeBelief(beliefId: string, limit?: number): Promise<{ belief: Memory; contradictions: SearchResult[]; supportingEvidence: SearchResult[] }> {
+    const belief = await this.get(beliefId);
+    if (!belief || belief.type !== 'belief') {
+      throw new Error(`Belief not found: ${beliefId}`);
+    }
+
+    const searchLimit = limit || 10;
+    
+    // Generate contradiction search terms by negating the key claims
+    const statement = belief.content.toLowerCase();
+    let contradictionQueries: string[] = [];
+    
+    // Basic negation patterns
+    if (statement.includes('is not')) {
+      contradictionQueries.push(statement.replace('is not', 'is'));
+    } else if (statement.includes(' is ')) {
+      contradictionQueries.push(statement.replace(' is ', ' is not '));
+    }
+    
+    // Domain-specific contradictions
+    if (statement.includes('distribution')) {
+      contradictionQueries.push(statement.replace('distribution', 'product'));
+    }
+    if (statement.includes('product')) {
+      contradictionQueries.push(statement.replace('product', 'distribution'));
+    }
+    
+    // Extract key terms and search for problems/issues
+    const words = statement.split(' ').filter(w => w.length > 3);
+    if (words.length > 0) {
+      contradictionQueries.push(`${words[0]} problems`);
+      contradictionQueries.push(`${words[0]} issues`);
+      contradictionQueries.push(`${words[0]} needs improvement`);
+    }
+
+    // Search for contradictions
+    let contradictions: SearchResult[] = [];
+    for (const query of contradictionQueries) {
+      const results = await this.search({ 
+        query, 
+        limit: searchLimit,
+        type: undefined // Search all types except beliefs
+      });
+      contradictions.push(...results.filter(r => r.memory.type !== 'belief'));
+    }
+
+    // Remove duplicates and sort by score
+    const seen = new Set<string>();
+    contradictions = contradictions
+      .filter(r => {
+        if (seen.has(r.memory.id)) return false;
+        seen.add(r.memory.id);
+        return true;
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, searchLimit);
+
+    // Search for supporting evidence
+    const supportingEvidence = await this.search({
+      query: belief.content,
+      limit: searchLimit,
+      type: undefined
+    });
+    const filtered = supportingEvidence.filter(r => r.memory.id !== belief.id && r.memory.type !== 'belief');
+
+    // Update belief metadata
+    const now = new Date().toISOString();
+    const meta = belief.metadata as any;
+    await this.update(belief.id, {
+      metadata: {
+        ...meta,
+        last_challenged: now
+      }
+    });
+
+    return { belief, contradictions, supportingEvidence: filtered };
+  }
+
+  /** Update belief confidence with history tracking */
+  async updateBeliefConfidence(beliefId: string, newConfidence: number, reason: string): Promise<Memory | null> {
+    const belief = await this.get(beliefId);
+    if (!belief || belief.type !== 'belief') return null;
+
+    const now = new Date().toISOString();
+    const meta = belief.metadata as any;
+    const oldConfidence = meta?.confidence || 0.5;
+
+    const updatedMetadata = {
+      ...meta,
+      confidence: newConfidence,
+      last_challenged: now,
+      history: [
+        ...(meta.history || []),
+        { date: now, confidence: newConfidence, reason }
+      ]
+    };
+
+    // Update times_confirmed/times_refuted
+    if (newConfidence > oldConfidence) {
+      updatedMetadata.times_confirmed = (meta.times_confirmed || 0) + 1;
+    } else if (newConfidence < oldConfidence) {
+      updatedMetadata.times_refuted = (meta.times_refuted || 0) + 1;
+    }
+
+    return await this.update(belief.id, {
+      metadata: updatedMetadata,
+      importance: Math.max(0.6, newConfidence) // Update importance based on confidence
+    });
+  }
+
+  /** Mark belief as confirmed/refuted */
+  async resolveBeliefStatus(beliefId: string, status: 'confirmed' | 'refuted', reason: string): Promise<Memory | null> {
+    const belief = await this.get(beliefId);
+    if (!belief || belief.type !== 'belief') return null;
+
+    const now = new Date().toISOString();
+    const meta = belief.metadata as any;
+
+    const updatedMetadata = {
+      ...meta,
+      status,
+      last_challenged: now,
+      history: [
+        ...(meta.history || []),
+        { date: now, confidence: meta.confidence || 0.5, reason: `${status}: ${reason}` }
+      ]
+    };
+
+    if (status === 'confirmed') {
+      updatedMetadata.times_confirmed = (meta.times_confirmed || 0) + 1;
+    } else {
+      updatedMetadata.times_refuted = (meta.times_refuted || 0) + 1;
+    }
+
+    return await this.update(belief.id, {
+      metadata: updatedMetadata
+    });
   }
 
   close(): void {

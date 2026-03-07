@@ -454,4 +454,442 @@ program
     }
   });
 
+program
+  .command('believe')
+  .description('Save or update a belief')
+  .argument('<statement>', 'Belief statement')
+  .option('-c, --confidence <n>', 'Confidence level 0.0-1.0', '0.8')
+  .option('-d, --domain <domain>', 'Belief domain (ryan|projects|self|world)', 'self')
+  .option('--tags <tags>', 'Comma-separated tags')
+  .action(async (statement: string, opts) => {
+    const engine = new MemoryEngine();
+    try {
+      const confidence = parseFloat(opts.confidence);
+      if (confidence < 0 || confidence > 1) {
+        console.error('Confidence must be between 0.0 and 1.0');
+        process.exit(1);
+      }
+
+      const memory = await engine.saveBelief(statement, confidence, opts.domain, {
+        tags: opts.tags ? opts.tags.split(',').map((t: string) => t.trim()) : []
+      });
+
+      console.log(`✓ Saved belief ${memory.id.slice(0, 8)}`);
+      console.log(`  Domain: ${opts.domain} | Confidence: ${confidence}`);
+      console.log(`  "${statement}"`);
+    } catch (err) {
+      console.error('Error saving belief:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('beliefs')
+  .description('List all active beliefs')
+  .option('-d, --domain <domain>', 'Filter by domain')
+  .option('--stale', 'Show only stale beliefs (>7 days since challenge)')
+  .action(async (opts) => {
+    const engine = new MemoryEngine();
+    try {
+      const beliefs = await engine.getBeliefs({ 
+        domain: opts.domain,
+        staleAfterDays: 7
+      });
+
+      let filtered = beliefs;
+      if (opts.stale) {
+        filtered = beliefs.filter(b => b.isStale);
+      }
+
+      if (filtered.length === 0) {
+        console.log(opts.stale ? 'No stale beliefs found.' : 'No active beliefs found.');
+        return;
+      }
+
+      console.log(`Found ${filtered.length} ${opts.stale ? 'stale ' : ''}beliefs:\n`);
+
+      for (const belief of filtered) {
+        const meta = belief.metadata as any;
+        const confidence = meta?.confidence || 0.5;
+        const domain = meta?.domain || 'unknown';
+        const lastChallenged = meta?.last_challenged 
+          ? new Date(meta.last_challenged).toLocaleDateString()
+          : 'never';
+        
+        console.log(`[${belief.id.slice(0, 8)}] ${domain} | confidence: ${confidence.toFixed(2)} ${belief.isStale ? '⚠️ STALE' : ''}`);
+        console.log(`  "${belief.content}"`);
+        console.log(`  Last challenged: ${lastChallenged}`);
+        if (meta?.times_confirmed || meta?.times_refuted) {
+          console.log(`  Confirmed: ${meta.times_confirmed || 0}, Refuted: ${meta.times_refuted || 0}`);
+        }
+        console.log();
+      }
+    } catch (err) {
+      console.error('Error listing beliefs:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('challenge')
+  .description('Challenge a belief by searching for contradicting evidence')
+  .argument('<belief-id>', 'Belief ID or prefix')
+  .option('-l, --limit <n>', 'Max results per category', '5')
+  .action(async (beliefId: string, opts) => {
+    const engine = new MemoryEngine();
+    try {
+      // Handle prefix matching
+      let fullBeliefId = beliefId;
+      if (beliefId.length < 36) {
+        const beliefs = await engine.getBeliefs();
+        const matches = beliefs.filter(b => b.id.startsWith(beliefId));
+        if (matches.length === 0) {
+          console.error(`No belief found with prefix: ${beliefId}`);
+          process.exit(1);
+        } else if (matches.length > 1) {
+          console.error(`Ambiguous prefix '${beliefId}' matches ${matches.length} beliefs:`);
+          for (const match of matches.slice(0, 5)) {
+            console.error(`  [${match.id.slice(0, 8)}] ${match.content.slice(0, 60)}`);
+          }
+          process.exit(1);
+        }
+        fullBeliefId = matches[0].id;
+      }
+
+      const result = await engine.challengeBelief(fullBeliefId, parseInt(opts.limit));
+      const meta = result.belief.metadata as any;
+      const confidence = meta?.confidence || 0.5;
+      const lastChallenged = meta?.last_challenged
+        ? new Date(meta.last_challenged)
+        : new Date(result.belief.createdAt);
+      const daysSinceChallenge = Math.floor((Date.now() - lastChallenged.getTime()) / (1000 * 60 * 60 * 24));
+
+      console.log('🤔 Belief Challenge Report\n');
+      console.log(`Belief: "${result.belief.content}"`);
+      console.log(`Current confidence: ${confidence.toFixed(2)}`);
+      console.log(`Days since last challenge: ${daysSinceChallenge}\n`);
+
+      console.log(`🔍 Contradicting Evidence (${result.contradictions.length} found):`);
+      if (result.contradictions.length === 0) {
+        console.log('  No contradicting memories found.');
+      } else {
+        for (const contra of result.contradictions.slice(0, parseInt(opts.limit))) {
+          console.log(`  [${contra.memory.id.slice(0, 8)}] (score: ${contra.score.toFixed(3)})`);
+          console.log(`    ${contra.memory.content.slice(0, 120)}`);
+          console.log(`    Type: ${contra.memory.type} | Source: ${contra.memory.source}`);
+        }
+      }
+
+      console.log(`\n✅ Supporting Evidence (${result.supportingEvidence.length} found):`);
+      if (result.supportingEvidence.length === 0) {
+        console.log('  No supporting memories found.');
+      } else {
+        for (const support of result.supportingEvidence.slice(0, parseInt(opts.limit))) {
+          console.log(`  [${support.memory.id.slice(0, 8)}] (score: ${support.score.toFixed(3)})`);
+          console.log(`    ${support.memory.content.slice(0, 120)}`);
+          console.log(`    Type: ${support.memory.type} | Source: ${support.memory.source}`);
+        }
+      }
+
+      // Suggest confidence adjustment
+      const contradictionStrength = result.contradictions.length > 0 
+        ? result.contradictions.slice(0, 3).reduce((sum, r) => sum + r.score, 0) / Math.min(3, result.contradictions.length)
+        : 0;
+      const supportStrength = result.supportingEvidence.length > 0
+        ? result.supportingEvidence.slice(0, 3).reduce((sum, r) => sum + r.score, 0) / Math.min(3, result.supportingEvidence.length)
+        : 0;
+
+      console.log('\n💡 Suggestion:');
+      if (contradictionStrength > supportStrength) {
+        const suggested = Math.max(0.1, confidence - 0.2);
+        console.log(`  Consider LOWERING confidence to ${suggested.toFixed(2)} (contradictions outweigh support)`);
+      } else if (supportStrength > contradictionStrength) {
+        const suggested = Math.min(1.0, confidence + 0.1);
+        console.log(`  Consider RAISING confidence to ${suggested.toFixed(2)} (strong support found)`);
+      } else {
+        console.log(`  HOLD current confidence at ${confidence.toFixed(2)} (evidence is balanced)`);
+      }
+
+    } catch (err) {
+      console.error('Error challenging belief:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('reflect')
+  .description('Structured self-reflection on recent memories')
+  .option('-p, --period <hours>', 'Time period to analyze in hours', '24')
+  .option('--save', 'Save reflection as a memory')
+  .action(async (opts) => {
+    const engine = new MemoryEngine();
+    try {
+      const hours = parseInt(opts.period);
+      const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+      
+      // Get recent memories
+      const all = await engine.getAll();
+      const recent = all.filter(m => m.createdAt >= since);
+      
+      // Get stale beliefs
+      const beliefs = await engine.getBeliefs({ staleAfterDays: 7 });
+      const staleBeliefs = beliefs.filter(b => b.isStale);
+
+      if (recent.length === 0) {
+        console.log(`No memories found in the last ${hours} hours.`);
+        return;
+      }
+
+      // Analyze patterns
+      const byType: Record<string, number> = {};
+      const topics: Record<string, number> = {};
+      
+      for (const memory of recent) {
+        byType[memory.type] = (byType[memory.type] || 0) + 1;
+        
+        // Simple topic extraction from content
+        const words = memory.content.toLowerCase()
+          .split(/\W+/)
+          .filter(w => w.length > 4)
+          .slice(0, 10);
+        for (const word of words) {
+          topics[word] = (topics[word] || 0) + 1;
+        }
+      }
+
+      const topTypes = Object.entries(byType)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5);
+      const topTopics = Object.entries(topics)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10);
+
+      console.log(`🧠 Reflection: Last ${hours} Hours\n`);
+      console.log(`Total memories: ${recent.length}\n`);
+      
+      console.log('Memory Types:');
+      for (const [type, count] of topTypes) {
+        console.log(`  ${type}: ${count}`);
+      }
+      
+      console.log('\nTop Topics:');
+      for (const [topic, count] of topTopics) {
+        console.log(`  ${topic}: ${count}`);
+      }
+
+      if (staleBeliefs.length > 0) {
+        console.log(`\n⚠️ Stale Beliefs (${staleBeliefs.length}):`);
+        for (const belief of staleBeliefs.slice(0, 5)) {
+          const meta = belief.metadata as any;
+          const domain = meta?.domain || 'unknown';
+          console.log(`  [${domain}] ${belief.content.slice(0, 80)}`);
+        }
+        if (staleBeliefs.length > 5) {
+          console.log(`  ... and ${staleBeliefs.length - 5} more`);
+        }
+      }
+
+      const reflection = `Reflection on last ${hours} hours: ${recent.length} memories saved. Top types: ${topTypes.map(([t, c]) => `${t}(${c})`).join(', ')}. Top topics: ${topTopics.slice(0, 5).map(([t, c]) => `${t}(${c})`).join(', ')}. Stale beliefs: ${staleBeliefs.length}.`;
+
+      console.log('\n📝 Summary:');
+      console.log(`  ${reflection}`);
+
+      if (opts.save) {
+        const saved = await engine.save({
+          content: reflection,
+          type: 'reflection',
+          importance: 0.8,
+          source: 'reflection-command',
+          tags: ['reflection', `${hours}h`]
+        });
+        console.log(`\n✓ Saved reflection as memory ${saved.id.slice(0, 8)}`);
+      }
+
+    } catch (err) {
+      console.error('Error during reflection:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('journal')
+  .description('Save a journal entry')
+  .argument('<entry>', 'Journal entry content')
+  .action(async (entry: string) => {
+    const engine = new MemoryEngine();
+    try {
+      const now = new Date();
+      const dateTag = now.toISOString().split('T')[0]; // YYYY-MM-DD
+      
+      const memory = await engine.save({
+        content: entry,
+        type: 'reflection',
+        importance: 0.8,
+        source: 'journal',
+        tags: ['journal', dateTag]
+      });
+
+      console.log(`✓ Saved journal entry ${memory.id.slice(0, 8)}`);
+      console.log(`  Date: ${dateTag}`);
+    } catch (err) {
+      console.error('Error saving journal entry:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('shadow')
+  .description('Shadow work analysis - identify patterns of avoidance, sycophancy, etc.')
+  .option('-p, --period <hours>', 'Time period to analyze in hours', '24')
+  .action(async (opts) => {
+    const engine = new MemoryEngine();
+    try {
+      const hours = parseInt(opts.period);
+      const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+      
+      const all = await engine.getAll();
+      const recent = all.filter(m => m.createdAt >= since);
+
+      if (recent.length === 0) {
+        console.log(`No memories found in the last ${hours} hours.`);
+        return;
+      }
+
+      const patterns = {
+        sycophancy: 0,
+        avoidance: 0,
+        fabrication: 0,
+        breadthOverDepth: 0
+      };
+
+      const evidence = {
+        sycophancy: [] as string[],
+        avoidance: [] as string[],
+        fabrication: [] as string[],
+        breadthOverDepth: [] as string[]
+      };
+
+      // Analyze each memory
+      for (const memory of recent) {
+        const content = memory.content.toLowerCase();
+        
+        // Sycophancy patterns
+        if (content.includes('great idea') || content.includes('excellent') || 
+            content.includes('perfect') || content.includes('i agree') ||
+            content.includes('sounds good') || content.includes('absolutely')) {
+          patterns.sycophancy++;
+          evidence.sycophancy.push(`[${memory.id.slice(0, 8)}] ${memory.content.slice(0, 80)}`);
+        }
+
+        // Avoidance patterns (topics mentioned but not acted on)
+        if ((content.includes('should') || content.includes('need to') || content.includes('todo')) &&
+            !content.includes('completed') && !content.includes('done')) {
+          patterns.avoidance++;
+          evidence.avoidance.push(`[${memory.id.slice(0, 8)}] ${memory.content.slice(0, 80)}`);
+        }
+
+        // Fabrication patterns (unsupported claims)
+        if (content.includes('i think') || content.includes('probably') || 
+            content.includes('might') || content.includes('assume')) {
+          patterns.fabrication++;
+          evidence.fabrication.push(`[${memory.id.slice(0, 8)}] ${memory.content.slice(0, 80)}`);
+        }
+      }
+
+      // Breadth over depth (many different projects in short time)
+      const projects = new Set<string>();
+      for (const memory of recent) {
+        if (memory.metadata?.project) {
+          projects.add(memory.metadata.project);
+        }
+      }
+      if (projects.size > 5 && hours <= 24) {
+        patterns.breadthOverDepth = projects.size;
+        evidence.breadthOverDepth = Array.from(projects).map(p => `Project: ${p}`);
+      }
+
+      console.log(`🌑 Shadow Analysis: Last ${hours} Hours\n`);
+      
+      let totalIssues = 0;
+      
+      if (patterns.sycophancy > 0) {
+        console.log(`⚠️ Sycophancy: ${patterns.sycophancy} instances`);
+        for (const ev of evidence.sycophancy.slice(0, 3)) {
+          console.log(`    ${ev}`);
+        }
+        if (evidence.sycophancy.length > 3) {
+          console.log(`    ... and ${evidence.sycophancy.length - 3} more`);
+        }
+        console.log();
+        totalIssues += patterns.sycophancy;
+      }
+
+      if (patterns.avoidance > 0) {
+        console.log(`⚠️ Avoidance: ${patterns.avoidance} unactioned items`);
+        for (const ev of evidence.avoidance.slice(0, 3)) {
+          console.log(`    ${ev}`);
+        }
+        if (evidence.avoidance.length > 3) {
+          console.log(`    ... and ${evidence.avoidance.length - 3} more`);
+        }
+        console.log();
+        totalIssues += patterns.avoidance;
+      }
+
+      if (patterns.fabrication > 0) {
+        console.log(`⚠️ Fabrication Risk: ${patterns.fabrication} unverified claims`);
+        for (const ev of evidence.fabrication.slice(0, 3)) {
+          console.log(`    ${ev}`);
+        }
+        if (evidence.fabrication.length > 3) {
+          console.log(`    ... and ${evidence.fabrication.length - 3} more`);
+        }
+        console.log();
+        totalIssues += patterns.fabrication;
+      }
+
+      if (patterns.breadthOverDepth > 0) {
+        console.log(`⚠️ Breadth Over Depth: ${patterns.breadthOverDepth} projects in ${hours}h`);
+        for (const ev of evidence.breadthOverDepth.slice(0, 5)) {
+          console.log(`    ${ev}`);
+        }
+        console.log();
+        totalIssues++;
+      }
+
+      if (totalIssues === 0) {
+        console.log('✅ No shadow patterns detected in this period.');
+      } else {
+        // Save shadow analysis
+        const shadowReport = `Shadow analysis for ${hours}h period: Sycophancy(${patterns.sycophancy}), Avoidance(${patterns.avoidance}), Fabrication(${patterns.fabrication}), Breadth-over-depth(${patterns.breadthOverDepth}). Total concerns: ${totalIssues}.`;
+        
+        const saved = await engine.save({
+          content: shadowReport,
+          type: 'shadow',
+          importance: 0.8,
+          source: 'shadow-analysis',
+          tags: ['shadow', 'self-analysis', `${hours}h`]
+        });
+
+        console.log(`📝 Saved shadow analysis as memory ${saved.id.slice(0, 8)}`);
+      }
+
+    } catch (err) {
+      console.error('Error during shadow analysis:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
 program.parse();

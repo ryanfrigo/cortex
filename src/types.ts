@@ -1,4 +1,4 @@
-export type MemoryType = 'episodic' | 'semantic' | 'procedural' | 'decision' | 'lesson' | 'fact' | 'preference' | 'project-state' | 'person' | 'session';
+export type MemoryType = 'episodic' | 'semantic' | 'procedural' | 'decision' | 'lesson' | 'fact' | 'preference' | 'project-state' | 'person' | 'session' | 'belief' | 'reflection' | 'shadow';
 
 export interface MemoryMetadata {
   project?: string;      // e.g. "voicecharm", "kalshi", "clawmart"
@@ -13,6 +13,18 @@ export interface MemoryMetadata {
   deployed?: boolean;     // Whether deployment was involved
   isSummary?: boolean;    // Session summary memory
   exchangeCount?: number; // Number of exchanges in session
+}
+
+export interface BeliefMetadata extends MemoryMetadata {
+  confidence: number;           // 0.0-1.0
+  domain: string;               // 'ryan' | 'projects' | 'self' | 'world'
+  evidence_for?: string[];      // memory IDs supporting this belief
+  evidence_against?: string[];  // memory IDs contradicting this belief
+  last_challenged?: string;     // ISO date
+  times_confirmed?: number;
+  times_refuted?: number;
+  status?: 'active' | 'refuted' | 'confirmed' | 'retired';
+  history?: Array<{ date: string; confidence: number; reason: string }>;
 }
 
 export interface Memory {
