@@ -4,7 +4,7 @@ import { createHash } from 'crypto';
 import { initDatabase, getDefaultDbPath, getOrCreateTable } from './schema.js';
 import { embed } from './embeddings.js';
 import { computeRecencyScore, computeHybridScore, normalizeBm25Scores } from './scoring.js';
-import type { Memory, MemoryInput, MemoryType, SearchOptions, SearchResult, MemoryStats, MemoryMetadata, BeliefMetadata } from './types.js';
+import type { Memory, MemoryInput, MemoryType, SearchOptions, SearchResult, MemoryStats, MemoryMetadata, BeliefMetadata, PredictionMetadata } from './types.js';
 import { statSync, readdirSync } from 'fs';
 import { join } from 'path';
 
@@ -634,7 +634,7 @@ export class MemoryEngine {
   }
 
   /** Save a belief with confidence tracking */
-  async saveBelief(statement: string, confidence: number, domain: string, options?: { tags?: string[]; evidence?: string[] }): Promise<Memory> {
+  async saveBelief(statement: string, confidence: number, domain: string, options?: { tags?: string[]; evidence?: string[]; holder?: string }): Promise<Memory> {
     const now = new Date().toISOString();
     
     // Check for similar existing beliefs (cosine sim > 0.9)
@@ -669,7 +669,9 @@ export class MemoryEngine {
       times_confirmed: 0,
       times_refuted: 0,
       status: 'active' as const,
-      history: [{ date: now, confidence, reason: 'initial belief' }]
+      history: [{ date: now, confidence, reason: 'initial belief' }],
+      holder: (options?.holder || 'orion') as _'user'_ | 'orion' | 'shared',
+      stated_confidence: confidence
     };
 
     return await this.save({
@@ -683,7 +685,7 @@ export class MemoryEngine {
   }
 
   /** Get all active beliefs, sorted by confidence desc */
-  async getBeliefs(options?: { domain?: string; staleAfterDays?: number }): Promise<Array<Memory & { isStale: boolean }>> {
+  async getBeliefs(options?: { domain?: string; staleAfterDays?: number; holder?: string }): Promise<Array<Memory & { isStale: boolean }>> {
     const staleThreshold = options?.staleAfterDays || 7;
     const now = Date.now();
     
@@ -700,6 +702,7 @@ export class MemoryEngine {
         const meta = m.metadata as any;
         if (meta?.status && meta.status !== 'active') return false;
         if (options?.domain && meta?.domain !== options.domain) return false;
+        if (options?.holder && meta?.holder !== options.holder) return false;
         return true;
       });
 
@@ -858,6 +861,492 @@ export class MemoryEngine {
     return await this.update(belief.id, {
       metadata: updatedMetadata
     });
+  }
+
+  /** Save a prediction with deadline */
+  async savePrediction(statement: string, confidence: number, deadline: string, holder: string, domain: string): Promise<Memory> {
+    const metadata: PredictionMetadata = {
+      confidence,
+      holder: holder as _'user'_ | 'orion' | 'shared',
+      deadline,
+      domain,
+      status: 'open'
+    };
+
+    return await this.save({
+      content: statement,
+      type: 'prediction',
+      importance: Math.max(0.7, confidence), // Predictions have high baseline importance
+      source: 'prediction-system',
+      metadata
+    });
+  }
+
+  /** Get open predictions, optionally filter by expired */
+  async getPredictions(options?: { holder?: string; expired?: boolean; domain?: string }): Promise<Memory[]> {
+    const tbl = await this.table();
+    let predictions: Memory[];
+    try {
+      const rows = await tbl.query().where("type = 'prediction'").toArray();
+      predictions = rows.map(r => this.rowToMemory(r));
+    } catch { predictions = []; }
+    
+    const now = new Date();
+    
+    return predictions
+      .filter(p => {
+        const meta = p.metadata as PredictionMetadata;
+        if (!meta) return false;
+        
+        // Filter by holder
+        if (options?.holder && meta.holder !== options.holder) return false;
+        
+        // Filter by domain
+        if (options?.domain && meta.domain !== options.domain) return false;
+        
+        // Filter by expired status
+        if (options?.expired !== undefined) {
+          const deadlineDate = new Date(meta.deadline);
+          const isExpired = now > deadlineDate && meta.status === 'open';
+          if (options.expired !== isExpired) return false;
+        }
+        
+        return true;
+      })
+      .sort((a, b) => {
+        const aDeadline = new Date((a.metadata as PredictionMetadata).deadline);
+        const bDeadline = new Date((b.metadata as PredictionMetadata).deadline);
+        return aDeadline.getTime() - bDeadline.getTime();
+      });
+  }
+
+  /** Resolve a prediction */
+  async resolvePrediction(predictionId: string, outcome: 'correct' | 'wrong' | 'partial', resolution: string): Promise<Memory | null> {
+    const prediction = await this.get(predictionId);
+    if (!prediction || prediction.type !== 'prediction') return null;
+
+    const now = new Date().toISOString();
+    const meta = prediction.metadata as PredictionMetadata;
+
+    const updatedMetadata: PredictionMetadata = {
+      ...meta,
+      status: outcome,
+      resolution,
+      resolved_at: now
+    };
+
+    return await this.update(prediction.id, {
+      metadata: updatedMetadata
+    });
+  }
+
+  /** Calculate calibration score (Brier score) across resolved predictions */
+  async getCalibration(options?: { holder?: string; domain?: string }): Promise<{
+    totalPredictions: number;
+    resolvedCount: number;
+    brierScore: number;
+    byConfidenceBucket: Array<{ bucket: string; predicted: number; actual: number; count: number }>;
+    byDomain: Record<string, { brierScore: number; count: number }>;
+    byHolder: Record<string, { brierScore: number; count: number }>;
+  }> {
+    const tbl = await this.table();
+    let predictions: Memory[];
+    try {
+      const rows = await tbl.query().where("type = 'prediction'").toArray();
+      predictions = rows.map(r => this.rowToMemory(r));
+    } catch { predictions = []; }
+
+    // Filter predictions
+    const filtered = predictions.filter(p => {
+      const meta = p.metadata as PredictionMetadata;
+      if (!meta) return false;
+      if (options?.holder && meta.holder !== options.holder) return false;
+      if (options?.domain && meta.domain !== options.domain) return false;
+      return true;
+    });
+
+    const resolved = filtered.filter(p => {
+      const meta = p.metadata as PredictionMetadata;
+      return meta.status === 'correct' || meta.status === 'wrong' || meta.status === 'partial';
+    });
+
+    if (resolved.length === 0) {
+      return {
+        totalPredictions: filtered.length,
+        resolvedCount: 0,
+        brierScore: 0,
+        byConfidenceBucket: [],
+        byDomain: {},
+        byHolder: {}
+      };
+    }
+
+    // Calculate Brier score
+    let brierSum = 0;
+    const buckets: Record<string, { predicted: number; actual: number; count: number }> = {};
+    const byDomain: Record<string, { brierScore: number; count: number; sum: number }> = {};
+    const byHolder: Record<string, { brierScore: number; count: number; sum: number }> = {};
+
+    for (const pred of resolved) {
+      const meta = pred.metadata as PredictionMetadata;
+      const confidence = meta.confidence;
+      const actualOutcome = meta.status === 'correct' ? 1 : meta.status === 'partial' ? 0.5 : 0;
+      
+      // Brier score: (prediction - outcome)^2
+      const brierContrib = Math.pow(confidence - actualOutcome, 2);
+      brierSum += brierContrib;
+
+      // Bucket analysis
+      const bucket = confidence >= 0.9 ? '90-100%' : 
+                     confidence >= 0.7 ? '70-89%' : 
+                     confidence >= 0.5 ? '50-69%' : 
+                     confidence >= 0.3 ? '30-49%' : '0-29%';
+      
+      if (!buckets[bucket]) {
+        buckets[bucket] = { predicted: 0, actual: 0, count: 0 };
+      }
+      buckets[bucket].predicted += confidence;
+      buckets[bucket].actual += actualOutcome;
+      buckets[bucket].count += 1;
+
+      // Domain breakdown
+      if (!byDomain[meta.domain]) {
+        byDomain[meta.domain] = { brierScore: 0, count: 0, sum: 0 };
+      }
+      byDomain[meta.domain].sum += brierContrib;
+      byDomain[meta.domain].count += 1;
+
+      // Holder breakdown  
+      if (!byHolder[meta.holder]) {
+        byHolder[meta.holder] = { brierScore: 0, count: 0, sum: 0 };
+      }
+      byHolder[meta.holder].sum += brierContrib;
+      byHolder[meta.holder].count += 1;
+    }
+
+    const brierScore = brierSum / resolved.length;
+
+    // Calculate averages
+    const domainFinal: Record<string, { brierScore: number; count: number }> = {};
+    for (const [domain, data] of Object.entries(byDomain)) {
+      domainFinal[domain] = { brierScore: data.sum / data.count, count: data.count };
+    }
+
+    const holderFinal: Record<string, { brierScore: number; count: number }> = {};
+    for (const [holder, data] of Object.entries(byHolder)) {
+      holderFinal[holder] = { brierScore: data.sum / data.count, count: data.count };
+    }
+
+    return {
+      totalPredictions: filtered.length,
+      resolvedCount: resolved.length,
+      brierScore,
+      byConfidenceBucket: Object.entries(buckets).map(([bucket, data]) => ({
+        bucket,
+        predicted: data.predicted / data.count,
+        actual: data.actual / data.count,
+        count: data.count
+      })),
+      byDomain: domainFinal,
+      byHolder: holderFinal
+    };
+  }
+
+  /** Log a behavioral signal (what someone actually did, vs what they said) */
+  async logBehavior(description: string, holder: string, relatedBeliefs?: string[]): Promise<Memory> {
+    const metadata: MemoryMetadata = {
+      holder: holder as _'user'_ | 'orion' | 'shared',
+      relatedBeliefs: relatedBeliefs || []
+    } as any;
+
+    return await this.save({
+      content: description,
+      type: 'behavior',
+      importance: 0.6,
+      source: 'behavior-tracker',
+      metadata
+    });
+  }
+
+  /** Compare stated beliefs vs behavioral signals for a holder */
+  async getBeliefGaps(holder: string): Promise<Array<{
+    belief: Memory;
+    statedConfidence: number;
+    revealedSignals: Memory[];
+    gap: number;
+    trend: 'widening' | 'narrowing' | 'stable';
+  }>> {
+    const tbl = await this.table();
+    
+    // Get beliefs for this holder
+    let beliefs: Memory[];
+    let behaviors: Memory[];
+    
+    try {
+      const beliefRows = await tbl.query().where("type = 'belief'").toArray();
+      beliefs = beliefRows
+        .map(r => this.rowToMemory(r))
+        .filter(b => {
+          const meta = b.metadata as BeliefMetadata;
+          return meta?.holder === holder;
+        });
+
+      const behaviorRows = await tbl.query().where("type = 'behavior'").toArray();
+      behaviors = behaviorRows
+        .map(r => this.rowToMemory(r))
+        .filter(b => {
+          const meta = b.metadata as any;
+          return meta?.holder === holder;
+        });
+    } catch { beliefs = []; behaviors = []; }
+
+    const gaps = [];
+
+    for (const belief of beliefs) {
+      const beliefMeta = belief.metadata as BeliefMetadata;
+      const statedConfidence = beliefMeta?.stated_confidence || beliefMeta?.confidence || 0.5;
+      
+      // Find related behavioral signals
+      const relatedSignals = behaviors.filter(behavior => {
+        const behaviorMeta = behavior.metadata as any;
+        if (behaviorMeta?.relatedBeliefs?.includes(belief.id)) return true;
+        
+        // Simple content similarity check
+        const beliefWords = belief.content.toLowerCase().split(/\W+/).filter(w => w.length > 3);
+        const behaviorWords = behavior.content.toLowerCase().split(/\W+/).filter(w => w.length > 3);
+        const overlap = beliefWords.filter(w => behaviorWords.includes(w)).length;
+        return overlap >= 2; // At least 2 word overlap
+      });
+
+      if (relatedSignals.length > 0) {
+        // Infer revealed confidence from behavior patterns
+        const revealedConfidence = beliefMeta?.revealed_confidence || this.inferRevealedConfidence(belief, relatedSignals);
+        const gap = Math.abs(statedConfidence - revealedConfidence);
+        
+        // Simple trend calculation based on recent vs older signals
+        const trend = this.calculateConfidenceTrend(belief, relatedSignals);
+
+        gaps.push({
+          belief,
+          statedConfidence,
+          revealedSignals: relatedSignals,
+          gap,
+          trend
+        });
+
+        // Update belief metadata with gap information
+        const updatedMeta: BeliefMetadata = {
+          ...beliefMeta,
+          revealed_confidence: revealedConfidence,
+          gap
+        };
+        await this.update(belief.id, { metadata: updatedMeta });
+      }
+    }
+
+    return gaps.sort((a, b) => b.gap - a.gap); // Sort by gap size descending
+  }
+
+  /** Log topic/project engagement */
+  async logAttention(topics: string[], holder: string, durationMinutes?: number): Promise<void> {
+    const now = new Date().toISOString();
+    const metadata: MemoryMetadata = {
+      holder: holder as _'user'_ | 'orion' | 'shared',
+      topics,
+      durationMinutes: durationMinutes || 1,
+      timestamp: now
+    } as any;
+
+    await this.save({
+      content: `Attention on: ${topics.join(', ')}${durationMinutes ? ` (${durationMinutes}m)` : ''}`,
+      type: 'attention',
+      importance: 0.3, // Lower importance, these are tracking signals
+      source: 'attention-tracker',
+      metadata
+    });
+  }
+
+  /** Get attention distribution over time */
+  async getAttention(options?: { holder?: string; periodHours?: number }): Promise<{
+    topicDistribution: Record<string, number>;
+    projectCount: number;
+    trend: string;
+    breadthScore: number;
+  }> {
+    const periodHours = options?.periodHours || 24;
+    const since = new Date(Date.now() - periodHours * 60 * 60 * 1000).toISOString();
+    
+    const tbl = await this.table();
+    let attentionRecords: Memory[];
+    
+    try {
+      const rows = await tbl.query().where("type = 'attention'").toArray();
+      attentionRecords = rows
+        .map(r => this.rowToMemory(r))
+        .filter(a => {
+          const meta = a.metadata as any;
+          if (options?.holder && meta?.holder !== options.holder) return false;
+          return a.createdAt >= since;
+        });
+    } catch { attentionRecords = []; }
+
+    const topicDistribution: Record<string, number> = {};
+    const projects = new Set<string>();
+    let totalMinutes = 0;
+
+    for (const record of attentionRecords) {
+      const meta = record.metadata as any;
+      const topics = meta?.topics || [];
+      const duration = meta?.durationMinutes || 1;
+      
+      totalMinutes += duration;
+      
+      for (const topic of topics) {
+        topicDistribution[topic] = (topicDistribution[topic] || 0) + duration;
+        projects.add(topic);
+      }
+    }
+
+    // Calculate breadth score (0 = laser focused, 1 = scattered)
+    const uniqueTopics = Object.keys(topicDistribution).length;
+    const breadthScore = uniqueTopics === 0 ? 0 : Math.min(1, uniqueTopics / 10);
+
+    // Simple trend analysis
+    const now = Date.now();
+    const halfPeriod = periodHours * 30 * 60 * 1000; // Half period in ms
+    const recent = attentionRecords.filter(a => new Date(a.createdAt).getTime() > now - halfPeriod);
+    const trend = recent.length > attentionRecords.length / 2 ? 'increasing' : 
+                  recent.length < attentionRecords.length / 2 ? 'decreasing' : 'stable';
+
+    return {
+      topicDistribution,
+      projectCount: projects.size,
+      trend,
+      breadthScore
+    };
+  }
+
+  /** Create a follow-up from shadow/reflection findings */
+  async createFollowUp(item: string, source: string, holder: string): Promise<Memory> {
+    const metadata: MemoryMetadata = {
+      holder: holder as _'user'_ | 'orion' | 'shared',
+      source,
+      status: 'open',
+      created_from: source
+    } as any;
+
+    return await this.save({
+      content: item,
+      type: 'follow-up',
+      importance: 0.8, // High importance to ensure follow-ups get attention
+      source: 'follow-up-tracker',
+      metadata
+    });
+  }
+
+  /** Get open follow-ups */
+  async getFollowUps(options?: { holder?: string; resolved?: boolean }): Promise<Memory[]> {
+    const tbl = await this.table();
+    let followUps: Memory[];
+    
+    try {
+      const rows = await tbl.query().where("type = 'follow-up'").toArray();
+      followUps = rows.map(r => this.rowToMemory(r));
+    } catch { followUps = []; }
+
+    return followUps
+      .filter(f => {
+        const meta = f.metadata as any;
+        if (options?.holder && meta?.holder !== options.holder) return false;
+        if (options?.resolved !== undefined) {
+          const isResolved = meta?.status === 'resolved';
+          if (options.resolved !== isResolved) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  /** Resolve a follow-up */
+  async resolveFollowUp(id: string, resolution: string): Promise<Memory | null> {
+    const followUp = await this.get(id);
+    if (!followUp || followUp.type !== 'follow-up') return null;
+
+    const now = new Date().toISOString();
+    const meta = followUp.metadata as any;
+
+    const updatedMetadata = {
+      ...meta,
+      status: 'resolved',
+      resolution,
+      resolved_at: now
+    };
+
+    return await this.update(followUp.id, {
+      metadata: updatedMetadata
+    });
+  }
+
+  private inferRevealedConfidence(belief: Memory, behaviorSignals: Memory[]): number {
+    // Simple heuristic: analyze behavior signals to infer actual confidence
+    // This is a basic implementation - could be much more sophisticated
+    
+    let supportingSignals = 0;
+    let contradictingSignals = 0;
+    
+    const beliefWords = belief.content.toLowerCase().split(/\W+/).filter(w => w.length > 3);
+    
+    for (const signal of behaviorSignals) {
+      const signalContent = signal.content.toLowerCase();
+      
+      // Check if behavior aligns with stated belief
+      const alignmentWords = ['committed', 'followed', 'maintained', 'consistent', 'delivered'];
+      const contradictionWords = ['avoided', 'skipped', 'ignored', 'inconsistent', 'failed'];
+      
+      if (alignmentWords.some(w => signalContent.includes(w))) {
+        supportingSignals++;
+      } else if (contradictionWords.some(w => signalContent.includes(w))) {
+        contradictingSignals++;
+      }
+    }
+
+    const totalSignals = supportingSignals + contradictingSignals;
+    if (totalSignals === 0) return 0.5; // No clear signals
+    
+    return supportingSignals / totalSignals;
+  }
+
+  private calculateConfidenceTrend(belief: Memory, signals: Memory[]): 'widening' | 'narrowing' | 'stable' {
+    if (signals.length < 2) return 'stable';
+    
+    // Sort signals by date
+    const sorted = signals.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    const recent = sorted.slice(-3); // Last 3 signals
+    const older = sorted.slice(0, -3); // Earlier signals
+    
+    if (older.length === 0) return 'stable';
+    
+    // Simple trend: are recent signals more or less aligned with stated belief?
+    const recentAlignment = this.calculateSignalAlignment(belief, recent);
+    const olderAlignment = this.calculateSignalAlignment(belief, older);
+    
+    if (Math.abs(recentAlignment - olderAlignment) < 0.1) return 'stable';
+    return recentAlignment > olderAlignment ? 'narrowing' : 'widening';
+  }
+
+  private calculateSignalAlignment(belief: Memory, signals: Memory[]): number {
+    // Return alignment score 0-1
+    if (signals.length === 0) return 0.5;
+    
+    let alignedCount = 0;
+    for (const signal of signals) {
+      const content = signal.content.toLowerCase();
+      if (content.includes('consistent') || content.includes('delivered') || content.includes('committed')) {
+        alignedCount++;
+      }
+    }
+    
+    return alignedCount / signals.length;
   }
 
   close(): void {

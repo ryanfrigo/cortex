@@ -12,16 +12,20 @@ const WEIGHTS = {
 const TYPE_BOOSTS: Record<string, number> = {
   decision: 1.0,
   lesson: 1.0,
+  prediction: 0.95,
   belief: 0.9,
+  'follow-up': 0.85,
   reflection: 0.8,
   shadow: 0.8,
   fact: 0.8,
   preference: 0.7,
+  behavior: 0.6,
   episodic: 0.5,
   semantic: 0.5,
   procedural: 0.5,
   'project-state': 0.5,
   person: 0.5,
+  attention: 0.3,
 };
 
 export function computeRecencyScore(dateStr: string): number {

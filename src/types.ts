@@ -1,4 +1,4 @@
-export type MemoryType = 'episodic' | 'semantic' | 'procedural' | 'decision' | 'lesson' | 'fact' | 'preference' | 'project-state' | 'person' | 'session' | 'belief' | 'reflection' | 'shadow';
+export type MemoryType = 'episodic' | 'semantic' | 'procedural' | 'decision' | 'lesson' | 'fact' | 'preference' | 'project-state' | 'person' | 'session' | 'belief' | 'reflection' | 'shadow' | 'prediction' | 'behavior' | 'follow-up' | 'attention';
 
 export interface MemoryMetadata {
   project?: string;      // e.g. "myapp", "kalshi", "market"
@@ -25,6 +25,20 @@ export interface BeliefMetadata extends MemoryMetadata {
   times_refuted?: number;
   status?: 'active' | 'refuted' | 'confirmed' | 'retired';
   history?: Array<{ date: string; confidence: number; reason: string }>;
+  holder?: _'user'_ | 'orion' | 'shared';
+  stated_confidence?: number;    // what was explicitly said
+  revealed_confidence?: number;  // inferred from behavior
+  gap?: number;                  // |stated - revealed|
+}
+
+export interface PredictionMetadata extends MemoryMetadata {
+  confidence: number;           // 0.0-1.0
+  holder: _'user'_ | 'orion' | 'shared';
+  deadline: string;             // ISO date — when to check
+  domain: string;               // _'user'_ | 'projects' | 'self' | 'world'
+  status: 'open' | 'correct' | 'wrong' | 'partial' | 'expired';
+  resolution?: string;          // what actually happened
+  resolved_at?: string;         // ISO date
 }
 
 export interface Memory {

@@ -460,6 +460,7 @@ program
   .argument('<statement>', 'Belief statement')
   .option('-c, --confidence <n>', 'Confidence level 0.0-1.0', '0.8')
   .option('-d, --domain <domain>', 'Belief domain (user|projects|self|world)', 'self')
+  .option('--holder <holder>', 'Belief holder (user|agent|shared)', 'orion')
   .option('--tags <tags>', 'Comma-separated tags')
   .action(async (statement: string, opts) => {
     const engine = new MemoryEngine();
@@ -471,11 +472,12 @@ program
       }
 
       const memory = await engine.saveBelief(statement, confidence, opts.domain, {
-        tags: opts.tags ? opts.tags.split(',').map((t: string) => t.trim()) : []
+        tags: opts.tags ? opts.tags.split(',').map((t: string) => t.trim()) : [],
+        holder: opts.holder
       });
 
       console.log(`✓ Saved belief ${memory.id.slice(0, 8)}`);
-      console.log(`  Domain: ${opts.domain} | Confidence: ${confidence}`);
+      console.log(`  Holder: ${opts.holder} | Domain: ${opts.domain} | Confidence: ${confidence}`);
       console.log(`  "${statement}"`);
     } catch (err) {
       console.error('Error saving belief:', (err as Error).message);
@@ -489,12 +491,39 @@ program
   .command('beliefs')
   .description('List all active beliefs')
   .option('-d, --domain <domain>', 'Filter by domain')
+  .option('--holder <holder>', 'Filter by holder')
   .option('--stale', 'Show only stale beliefs (>7 days since challenge)')
+  .option('--compare', 'Show both holders side by side')
   .action(async (opts) => {
     const engine = new MemoryEngine();
     try {
+      if (opts.compare) {
+        // Show beliefs from both holders side by side
+        const userBeliefs = await engine.getBeliefs({ domain: opts.domain, holder: 'ryan', staleAfterDays: 7 });
+        const agentBeliefs = await engine.getBeliefs({ domain: opts.domain, holder: 'orion', staleAfterDays: 7 });
+
+        console.log('Belief Comparison\n');
+        console.log('Ryan\'s Beliefs:');
+        for (const belief of userBeliefs.slice(0, 10)) {
+          const meta = belief.metadata as any;
+          const confidence = meta?.confidence || 0.5;
+          const gap = meta?.gap ? ` (gap: ${meta.gap.toFixed(2)})` : '';
+          console.log(`  [${belief.id.slice(0, 8)}] ${confidence.toFixed(2)}${gap} - ${belief.content.slice(0, 80)}`);
+        }
+
+        console.log('\nOrion\'s Beliefs:');
+        for (const belief of agentBeliefs.slice(0, 10)) {
+          const meta = belief.metadata as any;
+          const confidence = meta?.confidence || 0.5;
+          const gap = meta?.gap ? ` (gap: ${meta.gap.toFixed(2)})` : '';
+          console.log(`  [${belief.id.slice(0, 8)}] ${confidence.toFixed(2)}${gap} - ${belief.content.slice(0, 80)}`);
+        }
+        return;
+      }
+
       const beliefs = await engine.getBeliefs({ 
         domain: opts.domain,
+        holder: opts.holder,
         staleAfterDays: 7
       });
 
@@ -514,11 +543,18 @@ program
         const meta = belief.metadata as any;
         const confidence = meta?.confidence || 0.5;
         const domain = meta?.domain || 'unknown';
+        const holder = meta?.holder || 'unknown';
         const lastChallenged = meta?.last_challenged 
           ? new Date(meta.last_challenged).toLocaleDateString()
           : 'never';
         
-        console.log(`[${belief.id.slice(0, 8)}] ${domain} | confidence: ${confidence.toFixed(2)} ${belief.isStale ? '⚠️ STALE' : ''}`);
+        let gapInfo = '';
+        if (meta?.gap !== undefined) {
+          const revealed = meta?.revealed_confidence;
+          gapInfo = ` | gap: ${meta.gap.toFixed(2)}${revealed !== undefined ? ` (revealed: ${revealed.toFixed(2)})` : ''}`;
+        }
+        
+        console.log(`[${belief.id.slice(0, 8)}] ${holder}/${domain} | confidence: ${confidence.toFixed(2)}${gapInfo} ${belief.isStale ? '⚠️ STALE' : ''}`);
         console.log(`  "${belief.content}"`);
         console.log(`  Last challenged: ${lastChallenged}`);
         if (meta?.times_confirmed || meta?.times_refuted) {
@@ -886,6 +922,374 @@ program
 
     } catch (err) {
       console.error('Error during shadow analysis:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('predict')
+  .description('Save a prediction with deadline')
+  .argument('<statement>', 'Prediction statement')
+  .option('-c, --confidence <n>', 'Confidence level 0.0-1.0', '0.5')
+  .option('--by <deadline>', 'Deadline (ISO date: YYYY-MM-DD)', new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0])
+  .option('--holder <holder>', 'Prediction holder (user|agent|shared)', 'orion')
+  .option('-d, --domain <domain>', 'Domain (user|projects|self|world)', 'self')
+  .action(async (statement: string, opts) => {
+    const engine = new MemoryEngine();
+    try {
+      const confidence = parseFloat(opts.confidence);
+      if (confidence < 0 || confidence > 1) {
+        console.error('Confidence must be between 0.0 and 1.0');
+        process.exit(1);
+      }
+
+      // Validate deadline format
+      const deadlineDate = new Date(opts.by);
+      if (isNaN(deadlineDate.getTime())) {
+        console.error('Invalid deadline format. Use YYYY-MM-DD');
+        process.exit(1);
+      }
+
+      const memory = await engine.savePrediction(statement, confidence, opts.by, opts.holder, opts.domain);
+
+      console.log(`✓ Saved prediction ${memory.id.slice(0, 8)}`);
+      console.log(`  Holder: ${opts.holder} | Domain: ${opts.domain} | Confidence: ${confidence}`);
+      console.log(`  Deadline: ${opts.by}`);
+      console.log(`  "${statement}"`);
+    } catch (err) {
+      console.error('Error saving prediction:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('predictions')
+  .description('List open predictions')
+  .option('--holder <holder>', 'Filter by holder')
+  .option('--expired', 'Show only expired predictions')
+  .option('-d, --domain <domain>', 'Filter by domain')
+  .action(async (opts) => {
+    const engine = new MemoryEngine();
+    try {
+      const predictions = await engine.getPredictions({
+        holder: opts.holder,
+        expired: opts.expired,
+        domain: opts.domain
+      });
+
+      if (predictions.length === 0) {
+        console.log(opts.expired ? 'No expired predictions found.' : 'No open predictions found.');
+        return;
+      }
+
+      console.log(`Found ${predictions.length} ${opts.expired ? 'expired ' : ''}predictions:\n`);
+
+      const now = new Date();
+      for (const prediction of predictions) {
+        const meta = prediction.metadata as any;
+        const confidence = meta?.confidence || 0.5;
+        const deadline = new Date(meta?.deadline);
+        const holder = meta?.holder || 'unknown';
+        const domain = meta?.domain || 'unknown';
+        
+        const daysUntil = Math.ceil((deadline.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+        let timeInfo;
+        if (daysUntil > 0) {
+          timeInfo = `Due in ${daysUntil} days`;
+        } else if (daysUntil === 0) {
+          timeInfo = `Due TODAY`;
+        } else {
+          timeInfo = `OVERDUE by ${Math.abs(daysUntil)} days`;
+        }
+
+        console.log(`[${prediction.id.slice(0, 8)}] ${holder}/${domain} | confidence: ${confidence.toFixed(2)} | ${timeInfo}`);
+        console.log(`  "${prediction.content}"`);
+        console.log(`  Deadline: ${deadline.toLocaleDateString()}`);
+        console.log();
+      }
+    } catch (err) {
+      console.error('Error listing predictions:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('resolve')
+  .description('Resolve a prediction')
+  .argument('<prediction-id>', 'Prediction ID or prefix')
+  .option('--outcome <outcome>', 'Outcome: correct|wrong|partial', 'correct')
+  .option('--reason <reason>', 'What actually happened', 'Resolved via CLI')
+  .action(async (predictionId: string, opts) => {
+    const engine = new MemoryEngine();
+    try {
+      if (!['correct', 'wrong', 'partial'].includes(opts.outcome)) {
+        console.error('Outcome must be: correct, wrong, or partial');
+        process.exit(1);
+      }
+
+      const resolved = await engine.resolvePrediction(predictionId, opts.outcome as 'correct' | 'wrong' | 'partial', opts.reason);
+      if (resolved) {
+        console.log(`✓ Resolved prediction ${predictionId.slice(0, 8)} as ${opts.outcome}`);
+        console.log(`  Reason: ${opts.reason}`);
+        console.log(`  "${resolved.content}"`);
+      } else {
+        console.log(`Prediction not found: ${predictionId}`);
+      }
+    } catch (err) {
+      console.error('Error resolving prediction:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('calibration')
+  .description('Show calibration scores')
+  .option('--holder <holder>', 'Filter by holder')
+  .option('-d, --domain <domain>', 'Filter by domain')
+  .action(async (opts) => {
+    const engine = new MemoryEngine();
+    try {
+      const cal = await engine.getCalibration({
+        holder: opts.holder,
+        domain: opts.domain
+      });
+
+      console.log('🎯 Calibration Analysis\n');
+      console.log(`Total predictions: ${cal.totalPredictions}`);
+      console.log(`Resolved predictions: ${cal.resolvedCount}`);
+
+      if (cal.resolvedCount === 0) {
+        console.log('\nNo resolved predictions to analyze.');
+        return;
+      }
+
+      const brierGrade = cal.brierScore < 0.2 ? 'excellent' : 
+                         cal.brierScore < 0.3 ? 'good' : 
+                         cal.brierScore < 0.5 ? 'fair' : 'poor';
+      
+      console.log(`Overall Brier Score: ${cal.brierScore.toFixed(3)} (${brierGrade})\n`);
+
+      if (cal.byConfidenceBucket.length > 0) {
+        console.log('Confidence Calibration:');
+        for (const bucket of cal.byConfidenceBucket) {
+          const predicted = (bucket.predicted * 100).toFixed(0);
+          const actual = (bucket.actual * 100).toFixed(0);
+          const calibration = Math.abs(bucket.predicted - bucket.actual) < 0.1 ? '✓ well calibrated' : 
+                             bucket.predicted > bucket.actual ? '↗ overconfident' : '↘ underconfident';
+          console.log(`  When you say ${bucket.bucket}: actually right ${actual}% (${bucket.count} cases) ${calibration}`);
+        }
+        console.log();
+      }
+
+      if (Object.keys(cal.byDomain).length > 1) {
+        console.log('By Domain:');
+        for (const [domain, data] of Object.entries(cal.byDomain)) {
+          console.log(`  ${domain}: ${data.brierScore.toFixed(3)} (${data.count} predictions)`);
+        }
+        console.log();
+      }
+
+      if (Object.keys(cal.byHolder).length > 1) {
+        console.log('By Holder:');
+        for (const [holder, data] of Object.entries(cal.byHolder)) {
+          console.log(`  ${holder}: ${data.brierScore.toFixed(3)} (${data.count} predictions)`);
+        }
+      }
+    } catch (err) {
+      console.error('Error analyzing calibration:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('gaps')
+  .description('Show stated vs revealed belief gaps')
+  .option('--holder <holder>', 'Filter by holder', 'orion')
+  .action(async (opts) => {
+    const engine = new MemoryEngine();
+    try {
+      const gaps = await engine.getBeliefGaps(opts.holder);
+
+      if (gaps.length === 0) {
+        console.log(`No belief gaps found for ${opts.holder}.`);
+        return;
+      }
+
+      console.log(`🔍 Stated vs Revealed Belief Gaps for ${opts.holder}\n`);
+
+      for (const gap of gaps.slice(0, 10)) {
+        const trendIcon = gap.trend === 'widening' ? '📈' : gap.trend === 'narrowing' ? '📉' : '➡️';
+        
+        console.log(`[${gap.belief.id.slice(0, 8)}] Gap: ${gap.gap.toFixed(2)} | Trend: ${trendIcon} ${gap.trend}`);
+        console.log(`  Stated confidence: ${gap.statedConfidence.toFixed(2)}`);
+        console.log(`  Revealed signals: ${gap.revealedSignals.length}`);
+        console.log(`  "${gap.belief.content}"`);
+        
+        if (gap.revealedSignals.length > 0) {
+          console.log(`  Recent behavior: ${gap.revealedSignals[0].content.slice(0, 80)}`);
+        }
+        console.log();
+      }
+
+      if (gaps.length > 10) {
+        console.log(`... and ${gaps.length - 10} more gaps`);
+      }
+    } catch (err) {
+      console.error('Error analyzing belief gaps:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('behavior')
+  .description('Log a behavioral signal')
+  .argument('<description>', 'Behavior description')
+  .option('--holder <holder>', 'Behavior holder (user|agent|shared)', 'orion')
+  .option('--beliefs <ids>', 'Comma-separated belief IDs this relates to')
+  .action(async (description: string, opts) => {
+    const engine = new MemoryEngine();
+    try {
+      const relatedBeliefs = opts.beliefs ? opts.beliefs.split(',').map((id: string) => id.trim()) : undefined;
+      
+      const memory = await engine.logBehavior(description, opts.holder, relatedBeliefs);
+
+      console.log(`✓ Logged behavior ${memory.id.slice(0, 8)}`);
+      console.log(`  Holder: ${opts.holder}`);
+      if (relatedBeliefs) {
+        console.log(`  Related beliefs: ${relatedBeliefs.join(', ')}`);
+      }
+      console.log(`  "${description}"`);
+    } catch (err) {
+      console.error('Error logging behavior:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('attention')
+  .description('Show attention distribution')
+  .option('--period <hours>', 'Time period in hours', '24')
+  .option('--holder <holder>', 'Filter by holder')
+  .action(async (opts) => {
+    const engine = new MemoryEngine();
+    try {
+      const attention = await engine.getAttention({
+        holder: opts.holder,
+        periodHours: parseInt(opts.period)
+      });
+
+      console.log(`🧠 Attention Analysis: Last ${opts.period} Hours\n`);
+
+      const topTopics = Object.entries(attention.topicDistribution)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10);
+
+      if (topTopics.length === 0) {
+        console.log('No attention records found.');
+        return;
+      }
+
+      console.log('Topic Distribution:');
+      const totalMinutes = Object.values(attention.topicDistribution).reduce((a, b) => a + b, 0);
+      
+      for (const [topic, minutes] of topTopics) {
+        const percentage = totalMinutes > 0 ? ((minutes / totalMinutes) * 100).toFixed(1) : '0.0';
+        const percentageNum = parseFloat(percentage);
+        const bar = '█'.repeat(Math.max(1, Math.round(percentageNum / 5)));
+        console.log(`  ${topic.padEnd(20)} ${bar} ${minutes}m (${percentage}%)`);
+      }
+
+      console.log(`\nProject count: ${attention.projectCount}`);
+      console.log(`Breadth score: ${attention.breadthScore.toFixed(2)} (0=focused, 1=scattered)`);
+      console.log(`Trend: ${attention.trend}`);
+
+      const focusAssessment = attention.breadthScore < 0.3 ? 'Very focused' :
+                              attention.breadthScore < 0.6 ? 'Moderately focused' :
+                              attention.breadthScore < 0.8 ? 'Somewhat scattered' : 'Very scattered';
+      
+      console.log(`\n💡 Assessment: ${focusAssessment}`);
+    } catch (err) {
+      console.error('Error analyzing attention:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('followups')
+  .description('List open follow-up items')
+  .option('--holder <holder>', 'Filter by holder')
+  .option('--resolved', 'Show resolved follow-ups instead of open ones')
+  .action(async (opts) => {
+    const engine = new MemoryEngine();
+    try {
+      const followUps = await engine.getFollowUps({
+        holder: opts.holder,
+        resolved: opts.resolved
+      });
+
+      if (followUps.length === 0) {
+        console.log(opts.resolved ? 'No resolved follow-ups found.' : 'No open follow-ups found.');
+        return;
+      }
+
+      console.log(`Found ${followUps.length} ${opts.resolved ? 'resolved' : 'open'} follow-ups:\n`);
+
+      for (const followUp of followUps) {
+        const meta = followUp.metadata as any;
+        const holder = meta?.holder || 'unknown';
+        const source = meta?.source || 'unknown';
+        const status = meta?.status || 'unknown';
+        
+        console.log(`[${followUp.id.slice(0, 8)}] ${holder} | from: ${source} | status: ${status}`);
+        console.log(`  "${followUp.content}"`);
+        if (meta?.resolution) {
+          console.log(`  Resolution: ${meta.resolution}`);
+        }
+        console.log(`  Created: ${new Date(followUp.createdAt).toLocaleDateString()}`);
+        console.log();
+      }
+    } catch (err) {
+      console.error('Error listing follow-ups:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('followup-resolve')
+  .description('Resolve a follow-up')
+  .argument('<id>', 'Follow-up ID or prefix')
+  .option('--resolution <resolution>', 'Resolution description', 'Addressed via CLI')
+  .action(async (id: string, opts) => {
+    const engine = new MemoryEngine();
+    try {
+      const resolved = await engine.resolveFollowUp(id, opts.resolution);
+      if (resolved) {
+        console.log(`✓ Resolved follow-up ${id.slice(0, 8)}`);
+        console.log(`  Resolution: ${opts.resolution}`);
+        console.log(`  "${resolved.content}"`);
+      } else {
+        console.log(`Follow-up not found: ${id}`);
+      }
+    } catch (err) {
+      console.error('Error resolving follow-up:', (err as Error).message);
       process.exit(1);
     } finally {
       engine.close();
