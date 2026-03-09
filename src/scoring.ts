@@ -19,6 +19,7 @@ const TYPE_BOOSTS: Record<string, number> = {
   shadow: 0.8,
   fact: 0.8,
   preference: 0.7,
+  session: 0.65,  // Session transcripts — useful context but prioritize curated memories
   behavior: 0.6,
   episodic: 0.5,
   semantic: 0.5,

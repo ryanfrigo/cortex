@@ -74,6 +74,7 @@ export interface SearchOptions {
   type?: MemoryType;
   tags?: string[];
   minImportance?: number;
+  minVectorScore?: number;  // Minimum cosine similarity to filter noise (default: 0.25)
   project?: string;
 }
 
