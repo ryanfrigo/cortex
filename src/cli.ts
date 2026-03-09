@@ -162,48 +162,90 @@ program
   .command('curate')
   .description('Identify and clean up low-value memories')
   .option('--auto', 'Non-interactive mode: auto-delete low-value entries')
-  .action(async (opts: { auto?: boolean }) => {
+  .option('--importance <n>', 'Importance threshold (flag below this)', '0.6')
+  .option('--age <days>', 'Minimum age in days (0 = any age)', '0')
+  .option('--chatgpt', 'Also flag ChatGPT conversation dumps')
+  .option('--fragments', 'Also flag fragment memories (< 20 words)')
+  .action(async (opts: { auto?: boolean; importance?: string; age?: string; chatgpt?: boolean; fragments?: boolean }) => {
     const engine = new MemoryEngine();
     try {
       const all = await engine.getAll();
       const now = Date.now();
-      const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+      const importanceThreshold = parseFloat(opts.importance || '0.6');
+      const ageDays = parseInt(opts.age || '0');
+      const ageMs = ageDays * 24 * 60 * 60 * 1000;
 
-      // Find low-value entries
-      const lowValue = all.filter(m => {
+      const flagged: Array<{ id: string; content: string; importance: number; reason: string }> = [];
+
+      for (const m of all) {
         const age = now - new Date(m.createdAt).getTime();
-        return m.importance < 0.4 && (m.accessCount ?? 0) === 0 && age > thirtyDaysMs;
-      });
+        const reasons: string[] = [];
 
-      console.log(`Found ${lowValue.length} low-value memories (importance < 0.4, never accessed, > 30 days old)\n`);
-
-      if (lowValue.length > 0) {
-        for (const m of lowValue.slice(0, 20)) {
-          console.log(`  [${m.id.slice(0, 8)}] (imp: ${m.importance}) ${m.content.slice(0, 80)}`);
+        // Low importance + never accessed
+        if (m.importance < importanceThreshold && (m.accessCount ?? 0) === 0) {
+          if (ageDays === 0 || age > ageMs) {
+            reasons.push(`low-importance(${m.importance})`);
+          }
         }
-        if (lowValue.length > 20) console.log(`  ... and ${lowValue.length - 20} more`);
+
+        // ChatGPT noise detection
+        if (opts.chatgpt) {
+          const content = m.content;
+          const isChatGPT = (
+            (content.includes('**User:**') && content.includes('**Assistant:**')) ||
+            (content.includes('"role": "system"') && content.includes('"content":')) ||
+            (content.includes('"role": "user"') && content.includes('"role": "assistant"')) ||
+            (m.tags && m.tags.some((t: string) => t.toLowerCase().startsWith('chatgpt')))
+          );
+          if (isChatGPT) reasons.push('chatgpt-noise');
+        }
+
+        // Fragment detection
+        if (opts.fragments) {
+          const words = m.content.trim().split(/\s+/).filter((w: string) => w.length > 0);
+          if (words.length < 20) reasons.push('fragment');
+        }
+
+        if (reasons.length > 0) {
+          flagged.push({ id: m.id, content: m.content.slice(0, 100), importance: m.importance, reason: reasons.join(', ') });
+        }
+      }
+
+      const criteria = [
+        `importance < ${importanceThreshold}`,
+        ageDays > 0 ? `age > ${ageDays} days` : 'any age',
+        opts.chatgpt ? '+chatgpt noise' : '',
+        opts.fragments ? '+fragments' : '',
+      ].filter(Boolean).join(', ');
+
+      console.log(`Found ${flagged.length} flagged memories (${criteria})\n`);
+
+      if (flagged.length > 0) {
+        for (const m of flagged.slice(0, 20)) {
+          console.log(`  [${m.id.slice(0, 8)}] (imp: ${m.importance}, ${m.reason}) ${m.content.replace(/\n/g, ' ')}`);
+        }
+        if (flagged.length > 20) console.log(`  ... and ${flagged.length - 20} more`);
 
         if (opts.auto) {
-          const deleted = await engine.deleteBatch(lowValue.map(m => m.id));
-          console.log(`\n✓ Deleted ${deleted} low-value memories`);
+          const deleted = await engine.deleteBatch(flagged.map(m => m.id));
+          console.log(`\n✓ Deleted ${deleted} flagged memories`);
         } else {
           const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
           const answer = await new Promise<string>(resolve => {
-            rl.question(`\nDelete ${lowValue.length} low-value memories? (y/N) `, resolve);
+            rl.question(`\nDelete ${flagged.length} flagged memories? (y/N) `, resolve);
           });
           rl.close();
           if (answer.toLowerCase() === 'y') {
-            const deleted = await engine.deleteBatch(lowValue.map(m => m.id));
-            console.log(`✓ Deleted ${deleted} low-value memories`);
+            const deleted = await engine.deleteBatch(flagged.map(m => m.id));
+            console.log(`✓ Deleted ${deleted} flagged memories`);
           } else {
             console.log('Skipped.');
           }
         }
       }
 
-      // Note about duplicates - full cosine similarity check is expensive
-      console.log(`\nDuplicate detection: use 'cortex import --dedup' for content-hash dedup on import.`);
-      console.log(`Full cosine similarity dedup across ${all.length} memories would require O(n²) comparisons — skipping for large DBs.`);
+      console.log(`\nTip: Use --chatgpt --fragments for broader detection.`);
+      console.log(`     Use scripts/smart-curate.sh for the full heuristic analysis.`);
     } finally {
       engine.close();
     }
