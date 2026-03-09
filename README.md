@@ -273,6 +273,30 @@ const stats = await engine.stats();
 console.log(`Total memories: ${stats.totalMemories}`);
 ```
 
+## Agent Integration
+
+Cortex is designed to be the memory backbone for AI agents. See the docs for full integration guides:
+
+- **[Agent Integration Guide](docs/agent-integration.md)** — How any AI agent should use Cortex: search, save, ingest, curate, and best practices
+- **[OpenClaw Integration Guide](docs/openclaw-integration.md)** — Specific setup for OpenClaw agents: AGENTS.md config, session ingestion, heartbeat maintenance
+
+### Quick Start for Agents
+
+```bash
+# Search before answering (mandatory dual-search with memory_search)
+npx cortex search "deployment steps" --limit 5
+
+# Save lessons immediately when recognized
+npx cortex save --type belief --tags "calibration" "Always verify sub-agent output independently"
+
+# Ingest sessions after significant work days
+npx cortex ingest-sessions
+
+# Weekly maintenance
+npx cortex curate
+npx cortex health
+```
+
 ## Development
 
 ```bash
