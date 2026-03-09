@@ -233,8 +233,8 @@ npx cortex ingest-sessions
 Keep the database clean. Low-value entries dilute search results:
 
 ```bash
-npx cortex curate          # Review suggestions
-npx cortex curate --auto   # Auto-clean (use carefully)
+npx cortex curate --chatgpt --fragments   # Review suggestions with noise detection
+npx cortex curate --auto --chatgpt        # Auto-clean ChatGPT noise
 ```
 
 ### Tag consistently
@@ -251,3 +251,79 @@ Use namespaces to partition memories by domain:
 npx cortex save --namespace projects/voicecharm "..."
 npx cortex search "deployment" --namespace projects/voicecharm
 ```
+
+---
+
+## 7. Maintenance
+
+A bloated Cortex with noisy data hurts retrieval quality. Regular curation keeps signal-to-noise high.
+
+### When to Run Curation
+
+- **Daily**: Ingest new sessions (`npx cortex ingest-sessions`)
+- **Weekly**: Run a curation report to identify noise (`scripts/smart-curate.sh --sample 200`)
+- **Monthly**: Review and delete flagged entries, run decay on stale memories
+
+### Using the Smart Curate Script
+
+```bash
+# Report only (safe — doesn't delete anything)
+cd ~/dev/cortex && bash scripts/smart-curate.sh --sample 200
+
+# Delete flagged entries
+bash scripts/smart-curate.sh --sample 200 --delete
+```
+
+The script flags five categories:
+1. **Fragments** — memories with < 20 words (often broken imports)
+2. **ChatGPT noise** — raw conversation dumps with `**User:**`/`**Assistant:**` patterns
+3. **Code/data dumps** — memories that are mostly source code or table data
+4. **Low-signal episodic** — very long episodic entries with no meaningful tags
+5. **Duplicates** — near-identical content within the sample
+
+### Using the Improved Curate Command
+
+The built-in `curate` command now supports better heuristics:
+
+```bash
+# Flag ChatGPT noise + fragments (any importance, any age)
+npx cortex curate --chatgpt --fragments
+
+# Flag with custom importance threshold
+npx cortex curate --importance 0.6
+
+# Auto-delete everything flagged
+npx cortex curate --auto --chatgpt --fragments --importance 0.5
+```
+
+### What to Look For When Curating
+
+| Pattern | Example | Action |
+|---------|---------|--------|
+| Full ChatGPT conversations | `**User:** help me...` `**Assistant:** Here's...` | Delete — these are raw dumps, not distilled knowledge |
+| Code snippets without context | Raw Python/JS code blocks | Delete — save the *lesson*, not the code |
+| Markdown tables from exports | `\| Column \| Value \|` | Delete unless it contains unique data |
+| One-line fragments | `"cool"`, `"yes"`, `"hmm"` | Delete |
+| Duplicate entries | Same content saved multiple times | Keep one, delete rest |
+| Generic observations | `"The app works well"` | Delete — too vague to be useful |
+
+### Importance Scoring Guidelines
+
+When saving memories, set importance thoughtfully:
+
+| Importance | When to use |
+|------------|-------------|
+| 0.9–1.0 | Critical decisions, API keys, architecture choices |
+| 0.7–0.8 | Lessons learned, debugging insights, user preferences |
+| 0.5–0.6 | General facts, project notes, session summaries |
+| 0.3–0.4 | Low-confidence observations, temporary notes |
+| 0.1–0.2 | Raw data that might be useful later |
+
+To improve scores over time:
+- Run `npx cortex decay --apply --half-life 30` to naturally reduce stale memories
+- Manually boost important memories by re-saving with higher importance
+- Use `npx cortex audit` to find distribution issues
+
+### Automated Maintenance
+
+See [openclaw-cron-setup.md](./openclaw-cron-setup.md) for cron job configuration.
