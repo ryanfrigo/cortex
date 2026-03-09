@@ -178,8 +178,14 @@ export class MemoryEngine {
       }
     } catch { /* FTS might not be available */ }
 
+    // Minimum vector similarity threshold — filter out semantically irrelevant noise
+    const minVecScore = options.minVectorScore ?? 0.25;
+
     const results: SearchResult[] = vecResults
       .filter(m => {
+        // Vector similarity floor — prevents noise from sneaking in via recency/BM25
+        const vecScore = vecScoreMap.get(m.id) ?? 0;
+        if (vecScore < minVecScore) return false;
         if (options.namespace && (m.namespace ?? 'general') !== options.namespace) return false;
         if (options.type && m.type !== options.type) return false;
         if (options.minImportance && m.importance < options.minImportance) return false;

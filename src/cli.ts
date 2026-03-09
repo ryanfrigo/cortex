@@ -53,6 +53,7 @@ program
   .option('-n, --limit <n>', 'Max results', '5')
   .option('-t, --type <type>', 'Filter by type')
   .option('--min-importance <n>', 'Minimum importance')
+  .option('--min-vector <n>', 'Minimum vector similarity (0-1, default 0.25)')
   .option('--project <project>', 'Filter by project')
   .option('--namespace <ns>', 'Filter by namespace')
   .action(async (query: string, opts) => {
@@ -64,6 +65,7 @@ program
         limit: parseInt(opts.limit),
         type: opts.type as MemoryType | undefined,
         minImportance: opts.minImportance ? parseFloat(opts.minImportance) : undefined,
+        minVectorScore: opts.minVector ? parseFloat(opts.minVector) : undefined,
         project: opts.project,
       });
 
