@@ -159,18 +159,22 @@ export class MemoryEngine {
 
     // When filtering by type, we need more candidates since most will be filtered out
     const searchMultiplier = options.type ? 20 : 3;
+
+    // --- True hybrid retrieval: union of vector + FTS candidates ---
+
+    // 1. Vector search
     let vecResults: any[];
     try {
       vecResults = await tbl.search(Array.from(queryEmbedding)).limit(limit * searchMultiplier).toArray();
     } catch { vecResults = []; }
 
-    if (vecResults.length === 0) return [];
-
     const vecScoreMap = new Map(vecResults.map(r => [r.id, 1 / (1 + r._distance)]));
 
+    // 2. Full-text search (BM25)
+    let ftsResults: any[] = [];
     const bm25Map = new Map<string, number>();
     try {
-      const ftsResults = await tbl.search(options.query, 'fts').limit(limit * 3).toArray();
+      ftsResults = await tbl.search(options.query, 'fts').limit(limit * searchMultiplier).toArray();
       if (ftsResults.length > 0) {
         const rawScores = ftsResults.map(r => r._score ?? 1);
         const normalized = normalizeBm25Scores(rawScores);
@@ -178,41 +182,59 @@ export class MemoryEngine {
       }
     } catch { /* FTS might not be available */ }
 
-    // Minimum vector similarity threshold — filter out semantically irrelevant noise
+    // 3. Merge candidates: union of vector + FTS results by ID
+    const candidateMap = new Map<string, any>();
+    for (const r of vecResults) candidateMap.set(r.id, r);
+    for (const r of ftsResults) {
+      if (!candidateMap.has(r.id)) candidateMap.set(r.id, r);
+    }
+
+    if (candidateMap.size === 0) return [];
+
+    // Minimum vector similarity threshold for vector-only candidates
+    // FTS-only candidates get a pass if their BM25 score is strong enough
     const minVecScore = options.minVectorScore ?? 0.25;
+    const minBm25ForFtsOnly = 0.4; // FTS-only candidates need decent keyword match
 
-    const results: SearchResult[] = vecResults
-      .filter(m => {
-        // Vector similarity floor — prevents noise from sneaking in via recency/BM25
-        const vecScore = vecScoreMap.get(m.id) ?? 0;
-        if (vecScore < minVecScore) return false;
-        if (options.namespace && (m.namespace ?? 'general') !== options.namespace) return false;
-        if (options.type && m.type !== options.type) return false;
-        if (options.minImportance && m.importance < options.minImportance) return false;
-        if (options.tags?.length) {
+    const results: SearchResult[] = [];
+    for (const m of candidateMap.values()) {
+      const vectorScore = vecScoreMap.get(m.id) ?? 0;
+      const bm25Score = bm25Map.get(m.id) ?? 0;
+      const hasVec = vecScoreMap.has(m.id);
+      const hasFts = bm25Map.has(m.id);
+
+      // Gate: vector-only candidates need minimum similarity
+      // FTS-only candidates need strong keyword match
+      // Candidates in both always pass
+      if (hasVec && !hasFts && vectorScore < minVecScore) continue;
+      if (hasFts && !hasVec && bm25Score < minBm25ForFtsOnly) continue;
+
+      // Apply filters
+      if (options.namespace && (m.namespace ?? 'general') !== options.namespace) continue;
+      if (options.type && m.type !== options.type) continue;
+      if (options.minImportance && m.importance < options.minImportance) continue;
+      if (options.tags?.length) {
+        try {
           const memTags = JSON.parse(m.tags) as string[];
-          if (!options.tags.some(t => memTags.includes(t))) return false;
-        }
-        if (options.project) {
-          try {
-            const meta = JSON.parse(m.metadata || '{}');
-            if (meta.project && meta.project !== options.project) return false;
-          } catch { /* ignore */ }
-        }
-        return true;
-      })
-      .map(m => {
-        const vectorScore = vecScoreMap.get(m.id) ?? 0;
-        const bm25Score = bm25Map.get(m.id) ?? 0;
-        const recencyScore = computeRecencyScore(m.accessed_at);
-        const importanceScore = m.importance;
-        const score = computeHybridScore(vectorScore, bm25Score, recencyScore, importanceScore, m.access_count ?? 0, m.type as MemoryType);
+          if (!options.tags.some(t => memTags.includes(t))) continue;
+        } catch { continue; }
+      }
+      if (options.project) {
+        try {
+          const meta = JSON.parse(m.metadata || '{}');
+          if (meta.project && meta.project !== options.project) continue;
+        } catch { /* ignore */ }
+      }
 
-        return {
-          memory: this.rowToMemory(m),
-          score, vectorScore, bm25Score, recencyScore, importanceScore,
-        };
+      const recencyScore = computeRecencyScore(m.accessed_at);
+      const importanceScore = m.importance;
+      const score = computeHybridScore(vectorScore, bm25Score, recencyScore, importanceScore, m.access_count ?? 0, m.type as MemoryType);
+
+      results.push({
+        memory: this.rowToMemory(m),
+        score, vectorScore, bm25Score, recencyScore, importanceScore,
       });
+    }
 
     results.sort((a, b) => b.score - a.score);
 
