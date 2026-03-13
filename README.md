@@ -7,6 +7,7 @@
 
 Give your AI agent persistent memory that runs entirely on your machine. Cortex combines vector similarity, full-text search, recency, and importance scoring into a single embedded database — no cloud services, no API keys, no monthly bills.
 
+**v0.4.0**: L0/L1/L2 tiered context loading, hierarchical namespace subtrees, auto-session extraction (`cortex extract`).
 **v0.3.0**: Namespaced collections (brain regions), memory decay, consolidation, audit & health commands.
 
 ## Quick Start (2 minutes)
@@ -55,24 +56,54 @@ npm install -g cortex-memory
 
 Requires Node.js 18+. First run downloads the embedding model (~30MB) automatically.
 
+## Tiered Context Loading (L0/L1/L2)
+
+Every memory is automatically indexed at three depth levels — no LLM needed:
+
+| Level | Size | Content | Flag |
+|-------|------|---------|------|
+| **L0** | ~100 tokens | First sentence + key terms (abstract) | `--depth 0` (default) |
+| **L1** | ~500 tokens | First paragraph + structure | `--depth 1` |
+| **L2** | Full | Original content | `--depth 2` |
+
+```bash
+# Default: L0 abstracts — fastest, saves tokens
+cortex search "vector search"
+
+# L1 overviews — good balance
+cortex search "vector search" --depth 1
+
+# L2 full — when you need every detail
+cortex search "vector search" --depth 2
+```
+
+This is huge for agents: retrieve 10 L0 abstracts to scan what's relevant, then fetch full content only for the 1-2 memories you actually need.
+
 ## Namespaces (Brain Regions)
 
-Organize memories into namespaces — like brain regions for different types of knowledge:
+Organize memories into hierarchical namespaces — like a filesystem for knowledge:
 
 | Namespace | Purpose |
 |-----------|---------|
 | `health` | Food, workouts, sleep, body metrics |
-| `projects/*` | Per-project memories (e.g. `projects/myapp`) |
+| `projects/myapp` | MyApp-specific memories |
+| `projects/kalshi` | Kalshi-specific memories |
+| `user/preferences` | Personal settings and preferences |
+| `user/people` | Info about specific people |
 | `personal` | Relationships, reflections, plans |
 | `daily` | Raw daily logs |
 | `learnings` | Mistakes, corrections, patterns |
-| `people` | Info about specific people |
-| `general` | Default / uncategorized |
+| `general` | Default / uncategorized (backward compatible) |
 
 ```bash
 cortex save "Ran 5k in 24:30" --namespace health
+cortex save "MyApp uses Vapi" --namespace projects/myapp
+
+# Exact namespace match
 cortex search "running times" --namespace health
-cortex export --namespace people
+
+# Subtree search — matches all projects/* namespaces
+cortex search "project decisions" --namespace projects/ --namespace-prefix
 ```
 
 ## Memory Maintenance
@@ -115,7 +146,31 @@ cortex search "what programming languages"
 cortex search "deployment" --type procedural --limit 3
 cortex search "meeting notes" --min-importance 0.7
 cortex search "database setup" --project myapp --namespace projects/myapp
+
+# Tiered depth (token-efficient retrieval)
+cortex search "decisions" --depth 0          # L0 abstracts (default)
+cortex search "decisions" --depth 1          # L1 overviews
+cortex search "decisions" --depth 2          # L2 full content
+
+# Hierarchical namespace prefix (subtree search)
+cortex search "deployment" --namespace projects/ --namespace-prefix
+cortex search "who is" --namespace user/ --namespace-prefix
 ```
+
+### Extract Memories from a Transcript
+
+```bash
+# Dry run — preview what would be extracted
+cortex extract transcript.md --dry-run
+
+# Save to a specific namespace
+cortex extract meeting-notes.txt --namespace projects/myapp
+
+# Save to general (default)
+cortex extract conversation.md
+```
+
+`cortex extract` reads a conversation transcript (plain text or markdown) and automatically saves key facts, decisions, lessons, and person mentions as separate typed memories. Zero LLM calls — pure regex/heuristic extraction.
 
 ### Ingest Files & Folders
 

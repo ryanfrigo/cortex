@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { MemoryEngine } from './engine.js';
 import { parseMarkdownFile, parseMarkdownFileSmart } from './import.js';
 import { ingestSessions } from './ingest-sessions.js';
+import { extractFromTranscript } from './extract.js';
 import type { MemoryType } from './types.js';
 import * as readline from 'readline';
 import { readdirSync, statSync } from 'fs';
@@ -12,7 +13,7 @@ const program = new Command();
 program
   .name('cortex')
   .description('Local-first AI memory layer')
-  .version('0.3.0');
+  .version('0.4.0');
 
 program
   .command('save')
@@ -55,18 +56,23 @@ program
   .option('--min-importance <n>', 'Minimum importance')
   .option('--min-vector <n>', 'Minimum vector similarity (0-1, default 0.25)')
   .option('--project <project>', 'Filter by project')
-  .option('--namespace <ns>', 'Filter by namespace')
+  .option('--namespace <ns>', 'Filter by namespace (exact match unless --namespace-prefix)')
+  .option('--namespace-prefix', 'Treat --namespace as a prefix (matches subtrees, e.g. "projects/" matches all projects/*)')
+  .option('--depth <n>', 'Context depth: 0=L0 abstract (default, saves tokens), 1=L1 overview, 2=L2 full', '0')
   .action(async (query: string, opts) => {
     const engine = new MemoryEngine();
     try {
+      const depth = Math.min(2, Math.max(0, parseInt(opts.depth ?? '0', 10))) as 0 | 1 | 2;
       const results = await engine.search({
         query,
         namespace: opts.namespace,
+        namespacePrefix: opts.namespacePrefix,
         limit: parseInt(opts.limit),
         type: opts.type as MemoryType | undefined,
         minImportance: opts.minImportance ? parseFloat(opts.minImportance) : undefined,
         minVectorScore: opts.minVector ? parseFloat(opts.minVector) : undefined,
         project: opts.project,
+        depth,
       });
 
       if (results.length === 0) {
@@ -74,7 +80,8 @@ program
         return;
       }
 
-      console.log(`Found ${results.length} memories:\n`);
+      const depthLabel = depth === 0 ? 'L0 abstracts' : depth === 1 ? 'L1 overviews' : 'L2 full';
+      console.log(`Found ${results.length} memories [${depthLabel}]:\n`);
       for (const r of results) {
         console.log(`[${r.memory.id.slice(0, 8)}] (score: ${r.score.toFixed(3)}) ${r.memory.namespace}/${r.memory.type}`);
         console.log(`  ${r.memory.content}`);
@@ -1334,6 +1341,57 @@ program
       }
     } catch (err) {
       console.error('Error resolving follow-up:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('extract')
+  .description('Extract key facts, decisions, and lessons from a conversation transcript and save as separate memories')
+  .argument('<file>', 'Path to transcript file (plain text or markdown)')
+  .option('--namespace <ns>', 'Target namespace for extracted memories', 'general')
+  .option('--dry-run', 'Preview extracted memories without saving')
+  .option('--no-dedup', 'Disable content-hash deduplication')
+  .action(async (file: string, opts) => {
+    const { readFileSync } = await import('fs');
+    let transcript: string;
+    try {
+      transcript = readFileSync(file, 'utf-8');
+    } catch (err) {
+      console.error(`Could not read file: ${file}`);
+      process.exit(1);
+    }
+
+    const extracted = extractFromTranscript(transcript, opts.namespace);
+
+    if (extracted.length === 0) {
+      console.log('No extractable memories found in transcript.');
+      return;
+    }
+
+    console.log(`Extracted ${extracted.length} memories from ${file}:\n`);
+    for (const e of extracted) {
+      const inp = e.input;
+      const ns = inp.namespace ?? opts.namespace;
+      console.log(`  [${inp.type}] (${ns}) ${inp.content.slice(0, 100)}${inp.content.length > 100 ? '…' : ''}`);
+      console.log(`    ↳ ${e.reason}`);
+    }
+    console.log();
+
+    if (opts.dryRun) {
+      console.log('Dry run — nothing saved.');
+      return;
+    }
+
+    const engine = new MemoryEngine();
+    try {
+      const inputs = extracted.map(e => e.input);
+      const count = await engine.saveBatch(inputs, opts.dedup !== false);
+      console.log(`✓ Saved ${count} memories`);
+    } catch (err) {
+      console.error('Error saving extracted memories:', (err as Error).message);
       process.exit(1);
     } finally {
       engine.close();
