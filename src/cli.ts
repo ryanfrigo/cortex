@@ -2,9 +2,10 @@ import { Command } from 'commander';
 import { MemoryEngine } from './engine.js';
 import { parseMarkdownFile, parseMarkdownFileSmart } from './import.js';
 import { ingestSessions } from './ingest-sessions.js';
+import { extractFromTranscript } from './extract.js';
 import type { MemoryType } from './types.js';
 import * as readline from 'readline';
-import { readdirSync, statSync } from 'fs';
+import { readdirSync, statSync, readFileSync } from 'fs';
 import { join, extname } from 'path';
 
 const program = new Command();
@@ -55,18 +56,26 @@ program
   .option('--min-importance <n>', 'Minimum importance')
   .option('--min-vector <n>', 'Minimum vector similarity (0-1, default 0.25)')
   .option('--project <project>', 'Filter by project')
-  .option('--namespace <ns>', 'Filter by namespace')
+  .option('--namespace <ns>', 'Filter by namespace (append / for prefix match, e.g. "projects/")')
+  .option('--depth <n>', 'Context depth: 0=L0 abstract, 1=L1 overview, 2=full content (default: 0)', '0')
   .action(async (query: string, opts) => {
     const engine = new MemoryEngine();
     try {
+      const depth = parseInt(opts.depth ?? '0') as 0 | 1 | 2;
+      const namespace = opts.namespace as string | undefined;
+      // Detect prefix mode: namespace ends with /
+      const namespacePrefix = namespace ? namespace.endsWith('/') : false;
+
       const results = await engine.search({
         query,
-        namespace: opts.namespace,
+        namespace,
+        namespacePrefix,
         limit: parseInt(opts.limit),
         type: opts.type as MemoryType | undefined,
         minImportance: opts.minImportance ? parseFloat(opts.minImportance) : undefined,
         minVectorScore: opts.minVector ? parseFloat(opts.minVector) : undefined,
         project: opts.project,
+        depth,
       });
 
       if (results.length === 0) {
@@ -74,7 +83,8 @@ program
         return;
       }
 
-      console.log(`Found ${results.length} memories:\n`);
+      const depthLabel = depth === 0 ? 'L0 abstracts' : depth === 1 ? 'L1 overviews' : 'full content';
+      console.log(`Found ${results.length} memories [${depthLabel}]:\n`);
       for (const r of results) {
         console.log(`[${r.memory.id.slice(0, 8)}] (score: ${r.score.toFixed(3)}) ${r.memory.namespace}/${r.memory.type}`);
         console.log(`  ${r.memory.content}`);
@@ -1334,6 +1344,102 @@ program
       }
     } catch (err) {
       console.error('Error resolving follow-up:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('extract')
+  .description('Auto-extract memories from a conversation transcript (reads from stdin or file)')
+  .argument('[file]', 'Path to transcript file (or pipe via stdin)')
+  .option('--namespace <ns>', 'Target namespace for extracted memories', 'general')
+  .option('--dry-run', 'Show what would be extracted without saving')
+  .option('-v, --verbose', 'Show extraction reasons')
+  .action(async (file: string | undefined, opts) => {
+    const engine = new MemoryEngine();
+    try {
+      let transcript = '';
+
+      if (file) {
+        // Read from file
+        try {
+          transcript = readFileSync(file, 'utf-8');
+        } catch (err) {
+          console.error(`Error reading file: ${(err as Error).message}`);
+          process.exit(1);
+        }
+      } else {
+        // Read from stdin
+        const isTTY = process.stdin.isTTY;
+        if (isTTY) {
+          console.error('Usage: cat session.log | cortex extract [--namespace projects/voicecharm]');
+          console.error('       cortex extract session.log [--namespace projects/voicecharm]');
+          process.exit(1);
+        }
+        const chunks: Buffer[] = [];
+        for await (const chunk of process.stdin) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        }
+        transcript = Buffer.concat(chunks).toString('utf-8');
+      }
+
+      if (!transcript.trim()) {
+        console.error('Empty transcript — nothing to extract.');
+        process.exit(1);
+      }
+
+      const extracted = extractFromTranscript(transcript, opts.namespace);
+
+      if (extracted.length === 0) {
+        console.log('No structured memories could be extracted from the transcript.');
+        return;
+      }
+
+      console.log(`Extracted ${extracted.length} memories from transcript:\n`);
+
+      const byType: Record<string, number> = {};
+      for (const m of extracted) {
+        const t = m.input.type ?? 'semantic';
+        byType[t] = (byType[t] ?? 0) + 1;
+      }
+      for (const [type, count] of Object.entries(byType)) {
+        console.log(`  ${type}: ${count}`);
+      }
+      console.log();
+
+      for (const m of extracted) {
+        const typeIcon = m.input.type === 'belief' ? '🔵' :
+                         m.input.type === 'reflection' ? '🟡' :
+                         m.input.namespace === 'user/people' ? '🟣' : '⚪';
+        console.log(`${typeIcon} [${m.input.type}] ${m.input.namespace}`);
+        console.log(`  ${m.input.content.slice(0, 100)}${m.input.content.length > 100 ? '...' : ''}`);
+        if (opts.verbose) console.log(`  Reason: ${m.reason}`);
+        console.log();
+      }
+
+      if (opts.dryRun) {
+        console.log('Dry run — nothing saved. Remove --dry-run to save.');
+        return;
+      }
+
+      let saved = 0;
+      for (const m of extracted) {
+        try {
+          await engine.save(m.input, false); // Skip FTS rebuild per-save
+          saved++;
+        } catch (err) {
+          console.error(`  Failed to save: ${(err as Error).message}`);
+        }
+      }
+
+      // Rebuild FTS once at the end
+      await engine.rebuildFtsIndex();
+      console.log(`✓ Saved ${saved}/${extracted.length} extracted memories`);
+
+    } catch (err) {
+      console.error('Error during extraction:', (err as Error).message);
       process.exit(1);
     } finally {
       engine.close();

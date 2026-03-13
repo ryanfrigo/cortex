@@ -46,6 +46,8 @@ export interface Memory {
   namespace: string;    // brain region: health, projects/*, personal, daily, learnings, people
   type: MemoryType;
   content: string;
+  l0Summary: string;   // ~100 token abstract (L0 tier)
+  l1Summary: string;   // ~500 token overview (L1 tier)
   embedding: Float32Array | null;
   importance: number; // 0.0 - 1.0
   source: string;
@@ -76,6 +78,15 @@ export interface SearchOptions {
   minImportance?: number;
   minVectorScore?: number;  // Minimum cosine similarity to filter noise (default: 0.25)
   project?: string;
+  /**
+   * Context depth to return:
+   *  0 (default) = L0 ~100-token abstract
+   *  1            = L1 ~500-token overview
+   *  2            = L2 full content
+   */
+  depth?: 0 | 1 | 2;
+  /** If true, namespace is treated as a prefix (e.g. "projects/" matches "projects/voicecharm") */
+  namespacePrefix?: boolean;
 }
 
 export interface SearchResult {

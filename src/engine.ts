@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createHash } from 'crypto';
 import { initDatabase, getDefaultDbPath, getOrCreateTable } from './schema.js';
 import { embed } from './embeddings.js';
+import { generateL0, generateL1 } from './summarize.js';
 import { computeRecencyScore, computeHybridScore, normalizeBm25Scores } from './scoring.js';
 import type { Memory, MemoryInput, MemoryType, SearchOptions, SearchResult, MemoryStats, MemoryMetadata, BeliefMetadata, PredictionMetadata } from './types.js';
 import { statSync, readdirSync } from 'fs';
@@ -53,6 +54,8 @@ export class MemoryEngine {
     const metadata = input.metadata ?? {};
 
     const embedding = await embed(input.content);
+    const l0Summary = generateL0(input.content);
+    const l1Summary = generateL1(input.content);
     const tbl = await this.table();
 
     await tbl.add([{
@@ -60,6 +63,8 @@ export class MemoryEngine {
       namespace,
       type,
       content: input.content,
+      l0_summary: l0Summary,
+      l1_summary: l1Summary,
       importance,
       source,
       tags: JSON.stringify(tags),
@@ -130,6 +135,8 @@ export class MemoryEngine {
           namespace: input.namespace ?? 'general',
           type: input.type ?? 'semantic',
           content: input.content,
+          l0_summary: generateL0(input.content),
+          l1_summary: generateL1(input.content),
           importance: input.importance ?? 0.5,
           source: input.source ?? 'cli',
           tags: JSON.stringify(input.tags ?? []),
@@ -210,7 +217,15 @@ export class MemoryEngine {
       if (hasFts && !hasVec && bm25Score < minBm25ForFtsOnly) continue;
 
       // Apply filters
-      if (options.namespace && (m.namespace ?? 'general') !== options.namespace) continue;
+      if (options.namespace) {
+        const memNs: string = m.namespace ?? 'general';
+        if (options.namespacePrefix) {
+          // Treat namespace as a prefix: "projects/" matches "projects/voicecharm"
+          if (!memNs.startsWith(options.namespace)) continue;
+        } else {
+          if (memNs !== options.namespace) continue;
+        }
+      }
       if (options.type && m.type !== options.type) continue;
       if (options.minImportance && m.importance < options.minImportance) continue;
       if (options.tags?.length) {
@@ -230,8 +245,9 @@ export class MemoryEngine {
       const importanceScore = m.importance;
       const score = computeHybridScore(vectorScore, bm25Score, recencyScore, importanceScore, m.access_count ?? 0, m.type as MemoryType);
 
+      const depth = options.depth ?? 0;
       results.push({
-        memory: this.rowToMemory(m),
+        memory: this.rowToMemory(m, depth),
         score, vectorScore, bm25Score, recencyScore, importanceScore,
       });
     }
@@ -290,12 +306,16 @@ export class MemoryEngine {
 
     await tbl.delete(`id = '${id}'`);
     const embedding = await embed(content);
+    const l0Summary = generateL0(content);
+    const l1Summary = generateL1(content);
 
     await tbl.add([{
       id,
       namespace,
       type,
       content,
+      l0_summary: l0Summary,
+      l1_summary: l1Summary,
       importance,
       source: existing.source,
       tags: JSON.stringify(tags),
@@ -1381,18 +1401,35 @@ export class MemoryEngine {
     // LanceDB connections don't need explicit closing
   }
 
-  private rowToMemory(row: any): Memory {
+  private rowToMemory(row: any, depth: 0 | 1 | 2 = 2): Memory {
     let metadata: MemoryMetadata | undefined;
     try {
       const parsed = JSON.parse(row.metadata || '{}');
       if (Object.keys(parsed).length > 0) metadata = parsed;
     } catch { /* ignore */ }
 
+    const l0Summary: string = row.l0_summary ?? '';
+    const l1Summary: string = row.l1_summary ?? '';
+    const fullContent: string = row.content;
+
+    // Determine which tier to expose as "content" based on depth
+    // If L0/L1 summaries are empty (legacy rows), fall back to full content
+    let tieredContent: string;
+    if (depth === 0) {
+      tieredContent = l0Summary || fullContent;
+    } else if (depth === 1) {
+      tieredContent = l1Summary || fullContent;
+    } else {
+      tieredContent = fullContent;
+    }
+
     return {
       id: row.id,
       namespace: row.namespace ?? 'general',
       type: row.type,
-      content: row.content,
+      content: tieredContent,
+      l0Summary,
+      l1Summary,
       embedding: null,
       importance: row.importance,
       source: row.source,

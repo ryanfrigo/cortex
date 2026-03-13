@@ -16,19 +16,32 @@ export async function getOrCreateTable(db: Connection): Promise<Table> {
   const tableNames = await db.tableNames();
   if (tableNames.includes('memories')) {
     const table = await db.openTable('memories');
-    // Migration: add namespace column if missing
+    // Migration: add columns if missing
     try {
       const schema = await table.schema();
       const fieldNames = schema.fields.map((f: any) => f.name);
+      const migrations: Array<{ name: string; valueSql: string }> = [];
       if (!fieldNames.includes('namespace')) {
-        // Add namespace column by updating all rows
-        await table.addColumns([{ name: 'namespace', valueSql: "'general'" }]);
+        migrations.push({ name: 'namespace', valueSql: "'general'" });
+      }
+      if (!fieldNames.includes('l0_summary')) {
+        migrations.push({ name: 'l0_summary', valueSql: "''" });
+      }
+      if (!fieldNames.includes('l1_summary')) {
+        migrations.push({ name: 'l1_summary', valueSql: "''" });
+      }
+      if (migrations.length > 0) {
+        await table.addColumns(migrations);
       }
     } catch {
-      // If schema introspection fails, try adding column anyway
-      try {
-        await table.addColumns([{ name: 'namespace', valueSql: "'general'" }]);
-      } catch { /* column may already exist */ }
+      // If schema introspection fails, try adding columns individually
+      for (const col of [
+        { name: 'namespace', valueSql: "'general'" },
+        { name: 'l0_summary', valueSql: "''" },
+        { name: 'l1_summary', valueSql: "''" },
+      ]) {
+        try { await table.addColumns([col]); } catch { /* already exists */ }
+      }
     }
     return table;
   }
@@ -39,6 +52,8 @@ export async function getOrCreateTable(db: Connection): Promise<Table> {
       namespace: 'general',
       type: 'semantic',
       content: 'init',
+      l0_summary: '',
+      l1_summary: '',
       importance: 0.5,
       source: 'system',
       tags: '[]',
