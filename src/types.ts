@@ -46,6 +46,10 @@ export interface Memory {
   namespace: string;    // brain region: health, projects/*, personal, daily, learnings, people
   type: MemoryType;
   content: string;
+  /** L0 abstract: ~100 tokens — first sentence + key terms. Generated at save time. */
+  l0Content?: string;
+  /** L1 overview: ~500 tokens — first paragraph + structure. Generated at save time. */
+  l1Content?: string;
   embedding: Float32Array | null;
   importance: number; // 0.0 - 1.0
   source: string;
@@ -70,12 +74,21 @@ export interface MemoryInput {
 export interface SearchOptions {
   query: string;
   namespace?: string;
+  /** If true, treat namespace as a prefix — matches "projects/myapp", "projects/kalshi", etc. */
+  namespacePrefix?: boolean;
   limit?: number;
   type?: MemoryType;
   tags?: string[];
   minImportance?: number;
   minVectorScore?: number;  // Minimum cosine similarity to filter noise (default: 0.25)
   project?: string;
+  /**
+   * Context depth for returned content:
+   *   0 (default) — L0 abstract (~100 tokens, saves tokens)
+   *   1 — L1 overview (~500 tokens)
+   *   2 — L2 full original content
+   */
+  depth?: 0 | 1 | 2;
 }
 
 export interface SearchResult {
