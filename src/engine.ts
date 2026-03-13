@@ -4,6 +4,7 @@ import { createHash } from 'crypto';
 import { initDatabase, getDefaultDbPath, getOrCreateTable } from './schema.js';
 import { embed } from './embeddings.js';
 import { computeRecencyScore, computeHybridScore, normalizeBm25Scores } from './scoring.js';
+import { generateTiers, contentAtDepth } from './tiers.js';
 import type { Memory, MemoryInput, MemoryType, SearchOptions, SearchResult, MemoryStats, MemoryMetadata, BeliefMetadata, PredictionMetadata } from './types.js';
 import { statSync, readdirSync } from 'fs';
 import { join } from 'path';
@@ -54,12 +55,15 @@ export class MemoryEngine {
 
     const embedding = await embed(input.content);
     const tbl = await this.table();
+    const { l0, l1 } = generateTiers(input.content);
 
     await tbl.add([{
       id,
       namespace,
       type,
       content: input.content,
+      l0_content: l0,
+      l1_content: l1,
       importance,
       source,
       tags: JSON.stringify(tags),
@@ -78,7 +82,7 @@ export class MemoryEngine {
     }
 
     return {
-      id, namespace, type, content: input.content, embedding, importance, source, tags, metadata,
+      id, namespace, type, content: input.content, l0Content: l0, l1Content: l1, embedding, importance, source, tags, metadata,
       createdAt: now, updatedAt: now, accessedAt: now, accessCount: 0,
     };
   }
@@ -125,11 +129,14 @@ export class MemoryEngine {
         }
 
         const embedding = await embed(input.content);
+        const { l0, l1 } = generateTiers(input.content);
         rows.push({
           id: uuidv4(),
           namespace: input.namespace ?? 'general',
           type: input.type ?? 'semantic',
           content: input.content,
+          l0_content: l0,
+          l1_content: l1,
           importance: input.importance ?? 0.5,
           source: input.source ?? 'cli',
           tags: JSON.stringify(input.tags ?? []),
@@ -209,8 +216,17 @@ export class MemoryEngine {
       if (hasVec && !hasFts && vectorScore < minVecScore) continue;
       if (hasFts && !hasVec && bm25Score < minBm25ForFtsOnly) continue;
 
-      // Apply filters
-      if (options.namespace && (m.namespace ?? 'general') !== options.namespace) continue;
+      // Apply filters — support prefix matching for hierarchical namespaces
+      if (options.namespace) {
+        const ns = m.namespace ?? 'general';
+        if (options.namespacePrefix) {
+          // Prefix match: "projects/" matches "projects/voicecharm", "projects/kalshi"
+          const prefix = options.namespace.endsWith('/') ? options.namespace : options.namespace + '/';
+          if (ns !== options.namespace && !ns.startsWith(prefix)) continue;
+        } else {
+          if (ns !== options.namespace) continue;
+        }
+      }
       if (options.type && m.type !== options.type) continue;
       if (options.minImportance && m.importance < options.minImportance) continue;
       if (options.tags?.length) {
@@ -230,8 +246,11 @@ export class MemoryEngine {
       const importanceScore = m.importance;
       const score = computeHybridScore(vectorScore, bm25Score, recencyScore, importanceScore, m.access_count ?? 0, m.type as MemoryType);
 
+      const depth = options.depth ?? 0;
+      const memory = this.rowToMemory(m, depth);
+
       results.push({
-        memory: this.rowToMemory(m),
+        memory,
         score, vectorScore, bm25Score, recencyScore, importanceScore,
       });
     }
@@ -290,12 +309,15 @@ export class MemoryEngine {
 
     await tbl.delete(`id = '${id}'`);
     const embedding = await embed(content);
+    const { l0, l1 } = generateTiers(content);
 
     await tbl.add([{
       id,
       namespace,
       type,
       content,
+      l0_content: l0,
+      l1_content: l1,
       importance,
       source: existing.source,
       tags: JSON.stringify(tags),
@@ -1381,18 +1403,24 @@ export class MemoryEngine {
     // LanceDB connections don't need explicit closing
   }
 
-  private rowToMemory(row: any): Memory {
+  private rowToMemory(row: any, depth: 0 | 1 | 2 = 2): Memory {
     let metadata: MemoryMetadata | undefined;
     try {
       const parsed = JSON.parse(row.metadata || '{}');
       if (Object.keys(parsed).length > 0) metadata = parsed;
     } catch { /* ignore */ }
 
+    const l0Content: string | undefined = row.l0_content || undefined;
+    const l1Content: string | undefined = row.l1_content || undefined;
+    const displayContent = contentAtDepth(row.content, l0Content, l1Content, depth);
+
     return {
       id: row.id,
       namespace: row.namespace ?? 'general',
       type: row.type,
-      content: row.content,
+      content: displayContent,
+      l0Content,
+      l1Content,
       embedding: null,
       importance: row.importance,
       source: row.source,
