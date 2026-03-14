@@ -24,6 +24,8 @@ export async function getOrCreateTable(db: Connection): Promise<Table> {
       if (!fieldNames.includes('namespace')) migrations.push({ name: 'namespace', valueSql: "'general'" });
       if (!fieldNames.includes('l0_content')) migrations.push({ name: 'l0_content', valueSql: "''" });
       if (!fieldNames.includes('l1_content')) migrations.push({ name: 'l1_content', valueSql: "''" });
+      if (!fieldNames.includes('l0_summary')) migrations.push({ name: 'l0_summary', valueSql: "''" });
+      if (!fieldNames.includes('l1_summary')) migrations.push({ name: 'l1_summary', valueSql: "''" });
       if (migrations.length > 0) {
         await table.addColumns(migrations);
       }
@@ -33,6 +35,8 @@ export async function getOrCreateTable(db: Connection): Promise<Table> {
         { name: 'namespace', valueSql: "'general'" },
         { name: 'l0_content', valueSql: "''" },
         { name: 'l1_content', valueSql: "''" },
+        { name: 'l0_summary', valueSql: "''" },
+        { name: 'l1_summary', valueSql: "''" },
       ]) {
         try { await table.addColumns([col]); } catch { /* column may already exist */ }
       }
@@ -48,6 +52,8 @@ export async function getOrCreateTable(db: Connection): Promise<Table> {
       content: 'init',
       l0_content: '',
       l1_content: '',
+      l0_summary: '',
+      l1_summary: '',
       importance: 0.5,
       source: 'system',
       tags: '[]',
