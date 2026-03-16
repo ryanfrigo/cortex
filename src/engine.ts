@@ -609,7 +609,7 @@ export class MemoryEngine {
   async consolidate(options: { dryRun?: boolean; similarityThreshold?: number; minClusterSize?: number; maxMemories?: number }): Promise<{ clusters: Array<{ ids: string[]; contents: string[] }> }> {
     const threshold = options.similarityThreshold ?? 0.85;
     const minSize = options.minClusterSize ?? 2;
-    const maxMemories = options.maxMemories ?? 5000; // Limit to prevent O(n²) explosion
+    const maxMemories = options.maxMemories ?? 1000; // Reduced from 5000 to prevent timeouts
     const tbl = await this.table();
     
     // Get a limited set of memories, prioritizing by importance

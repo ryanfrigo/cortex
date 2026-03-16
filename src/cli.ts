@@ -448,7 +448,7 @@ program
   .option('--apply', 'Actually merge similar memories')
   .option('--threshold <n>', 'Cosine similarity threshold', '0.85')
   .option('--min-cluster <n>', 'Minimum cluster size', '2')
-  .option('--max-memories <n>', 'Max memories to process (performance limit)', '5000')
+  .option('--max-memories <n>', 'Max memories to process (performance limit)', '1000')
   .action(async (opts) => {
     if (!opts.dryRun && !opts.apply) {
       console.log('Specify --dry-run or --apply');
