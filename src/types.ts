@@ -80,7 +80,8 @@ export interface SearchOptions {
   type?: MemoryType;
   tags?: string[];
   minImportance?: number;
-  minVectorScore?: number;  // Minimum cosine similarity to filter noise (default: 0.25)
+  minVectorScore?: number;  // Minimum cosine similarity to filter noise (default: 0.3)
+  minScore?: number;        // Minimum hybrid score to filter noise (default: 0.3)
   project?: string;
   /**
    * Context depth for returned content:
@@ -107,4 +108,16 @@ export interface MemoryStats {
   dbSizeBytes: number;
   oldestMemory: string | null;
   newestMemory: string | null;
+  // Enhanced stats
+  avgImportance: number;
+  byImportanceTier: { high: number; medium: number; low: number };
+  oldestByType: Record<string, string>;
+  newestByType: Record<string, string>;
+  storageSummary?: { tableMb: number; indexMb: number; totalMb: number };
+}
+
+export interface DedupGroup {
+  keep: { id: string; content: string; importance: number; type: string };
+  remove: Array<{ id: string; content: string; importance: number; type: string }>;
+  similarity: number;
 }

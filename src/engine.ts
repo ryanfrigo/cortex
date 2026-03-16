@@ -5,7 +5,7 @@ import { initDatabase, getDefaultDbPath, getOrCreateTable } from './schema.js';
 import { embed } from './embeddings.js';
 import { computeRecencyScore, computeHybridScore, normalizeBm25Scores } from './scoring.js';
 import { generateTiers, contentAtDepth } from './tiers.js';
-import type { Memory, MemoryInput, MemoryType, SearchOptions, SearchResult, MemoryStats, MemoryMetadata, BeliefMetadata, PredictionMetadata } from './types.js';
+import type { Memory, MemoryInput, MemoryType, SearchOptions, SearchResult, MemoryStats, MemoryMetadata, BeliefMetadata, PredictionMetadata, DedupGroup } from './types.js';
 import { statSync, readdirSync } from 'fs';
 import { join } from 'path';
 
@@ -26,10 +26,45 @@ export function contentHash(text: string): string {
   return createHash('sha256').update(text.trim()).digest('hex');
 }
 
+/**
+ * Default importance by memory type.
+ * beliefs/reflections: 0.8  episodic/decisions/lessons: 0.7
+ * semantic/facts/knowledge: 0.5  session transcripts: 0.3
+ */
+export function defaultImportanceForType(type: MemoryType): number {
+  switch (type) {
+    case 'belief':
+    case 'reflection':
+    case 'shadow':
+    case 'prediction':
+      return 0.8;
+    case 'decision':
+    case 'lesson':
+    case 'episodic':
+    case 'follow-up':
+      return 0.7;
+    case 'semantic':
+    case 'fact':
+    case 'procedural':
+    case 'project-state':
+    case 'person':
+    case 'preference':
+    case 'behavior':
+      return 0.5;
+    case 'session':
+    case 'attention':
+      return 0.3;
+    default:
+      return 0.5;
+  }
+}
+
 export class MemoryEngine {
   private dbPath: string;
   private dbPromise: Promise<Connection>;
   private tablePromise: Promise<Table> | null = null;
+  /** Cached set of column names in the live table (populated on first use) */
+  private tableColumnsCache: Set<string> | null = null;
 
   constructor(dbPath?: string) {
     this.dbPath = dbPath ?? getDefaultDbPath();
@@ -43,12 +78,41 @@ export class MemoryEngine {
     return this.tablePromise;
   }
 
+  /** Returns the set of column names in the live table */
+  private async tableColumns(): Promise<Set<string>> {
+    if (this.tableColumnsCache) return this.tableColumnsCache;
+    try {
+      const tbl = await this.table();
+      const schema = await tbl.schema();
+      this.tableColumnsCache = new Set(schema.fields.map((f: any) => f.name as string));
+    } catch {
+      this.tableColumnsCache = new Set<string>();
+    }
+    return this.tableColumnsCache!;
+  }
+
+  /**
+   * Build a row object for LanceDB append.
+   * Automatically includes legacy column names (l0_summary, l1_summary)
+   * if the table was created with the old schema, so appends don't fail
+   * with a "missing columns" schema-mismatch error.
+   */
+  private async buildRow(fields: Record<string, any>): Promise<Record<string, any>> {
+    const cols = await this.tableColumns();
+    const row = { ...fields };
+    // Legacy column support
+    if (cols.has('l0_summary')) row.l0_summary = fields.l0_content ?? '';
+    if (cols.has('l1_summary')) row.l1_summary = fields.l1_content ?? '';
+    return row;
+  }
+
   async save(input: MemoryInput, rebuildFts = true): Promise<Memory> {
     const now = new Date().toISOString();
     const id = uuidv4();
     const namespace = input.namespace ?? 'general';
     const type = input.type ?? 'semantic';
-    const importance = input.importance ?? 0.5;
+    // Use type-based default when importance not explicitly provided
+    const importance = input.importance ?? defaultImportanceForType(type as MemoryType);
     const source = input.source ?? 'cli';
     const tags = input.tags ?? [];
     const metadata = input.metadata ?? {};
@@ -57,7 +121,7 @@ export class MemoryEngine {
     const tbl = await this.table();
     const { l0, l1 } = generateTiers(input.content);
 
-    await tbl.add([{
+    const row = await this.buildRow({
       id,
       namespace,
       type,
@@ -73,7 +137,8 @@ export class MemoryEngine {
       accessed_at: now,
       access_count: 0,
       vector: Array.from(embedding),
-    }]);
+    });
+    await tbl.add([row]);
 
     if (rebuildFts) {
       try {
@@ -130,14 +195,15 @@ export class MemoryEngine {
 
         const embedding = await embed(input.content);
         const { l0, l1 } = generateTiers(input.content);
-        rows.push({
+        const batchType = (input.type ?? 'semantic') as MemoryType;
+        rows.push(await this.buildRow({
           id: uuidv4(),
           namespace: input.namespace ?? 'general',
-          type: input.type ?? 'semantic',
+          type: batchType,
           content: input.content,
           l0_content: l0,
           l1_content: l1,
-          importance: input.importance ?? 0.5,
+          importance: input.importance ?? defaultImportanceForType(batchType),
           source: input.source ?? 'cli',
           tags: JSON.stringify(input.tags ?? []),
           metadata: JSON.stringify(input.metadata ?? {}),
@@ -146,7 +212,7 @@ export class MemoryEngine {
           accessed_at: now,
           access_count: 0,
           vector: Array.from(embedding),
-        });
+        }));
       }
       if (rows.length > 0) await tbl.add(rows);
       count += rows.length;
@@ -200,8 +266,9 @@ export class MemoryEngine {
 
     // Minimum vector similarity threshold for vector-only candidates
     // FTS-only candidates get a pass if their BM25 score is strong enough
-    const minVecScore = options.minVectorScore ?? 0.25;
+    const minVecScore = options.minVectorScore ?? 0.3;
     const minBm25ForFtsOnly = 0.4; // FTS-only candidates need decent keyword match
+    const minHybridScore = options.minScore ?? 0.3; // Minimum hybrid score to filter noise
 
     const results: SearchResult[] = [];
     for (const m of candidateMap.values()) {
@@ -245,6 +312,9 @@ export class MemoryEngine {
       const recencyScore = computeRecencyScore(m.accessed_at);
       const importanceScore = m.importance;
       const score = computeHybridScore(vectorScore, bm25Score, recencyScore, importanceScore, m.access_count ?? 0, m.type as MemoryType);
+
+      // Filter by minimum hybrid score to cut noise
+      if (score < minHybridScore) continue;
 
       const depth = options.depth ?? 0;
       const memory = this.rowToMemory(m, depth);
@@ -311,7 +381,7 @@ export class MemoryEngine {
     const embedding = await embed(content);
     const { l0, l1 } = generateTiers(content);
 
-    await tbl.add([{
+    const updateRow = await this.buildRow({
       id,
       namespace,
       type,
@@ -327,7 +397,8 @@ export class MemoryEngine {
       accessed_at: existing.accessedAt,
       access_count: existing.accessCount,
       vector: Array.from(embedding),
-    }]);
+    });
+    await tbl.add([updateRow]);
 
     return this.get(id);
   }
@@ -382,8 +453,12 @@ export class MemoryEngine {
 
     const byType: Record<string, number> = {};
     const byNamespace: Record<string, number> = {};
+    const oldestByType: Record<string, string> = {};
+    const newestByType: Record<string, string> = {};
     let oldest: string | null = null;
     let newest: string | null = null;
+    let importanceSum = 0;
+    let high = 0, medium = 0, low = 0;
 
     for (const r of rows) {
       const t = r.type as string;
@@ -392,9 +467,23 @@ export class MemoryEngine {
       byNamespace[ns] = (byNamespace[ns] ?? 0) + 1;
       if (!oldest || r.created_at < oldest) oldest = r.created_at;
       if (!newest || r.created_at > newest) newest = r.created_at;
+
+      // Oldest/newest by type
+      if (!oldestByType[t] || r.created_at < oldestByType[t]) oldestByType[t] = r.created_at;
+      if (!newestByType[t] || r.created_at > newestByType[t]) newestByType[t] = r.created_at;
+
+      // Importance tiers: high > 0.7, medium 0.4-0.7, low < 0.4
+      const imp = r.importance as number ?? 0.5;
+      importanceSum += imp;
+      if (imp > 0.7) high++;
+      else if (imp >= 0.4) medium++;
+      else low++;
     }
 
+    const avgImportance = rows.length > 0 ? +(importanceSum / rows.length).toFixed(3) : 0;
+
     let dbSizeBytes = 0;
+    let tableMb = 0, indexMb = 0;
     try {
       const calcSize = (dir: string): number => {
         let size = 0;
@@ -405,10 +494,37 @@ export class MemoryEngine {
         }
         return size;
       };
-      dbSizeBytes = calcSize(this.dbPath);
+      // Try to separate table files from index files
+      const entries = readdirSync(this.dbPath, { withFileTypes: true });
+      for (const entry of entries) {
+        const p = join(this.dbPath, entry.name);
+        const size = entry.isDirectory() ? calcSize(p) : (statSync(p).size ?? 0);
+        if (entry.name.includes('_idx') || entry.name.includes('index')) {
+          indexMb += size;
+        } else {
+          tableMb += size;
+        }
+      }
+      dbSizeBytes = tableMb + indexMb;
     } catch { /* */ }
 
-    return { totalMemories: rows.length, byType, byNamespace, dbSizeBytes, oldestMemory: oldest, newestMemory: newest };
+    return {
+      totalMemories: rows.length,
+      byType,
+      byNamespace,
+      dbSizeBytes,
+      oldestMemory: oldest,
+      newestMemory: newest,
+      avgImportance,
+      byImportanceTier: { high, medium, low },
+      oldestByType,
+      newestByType,
+      storageSummary: {
+        tableMb: +(tableMb / 1024 / 1024).toFixed(2),
+        indexMb: +(indexMb / 1024 / 1024).toFixed(2),
+        totalMb: +(dbSizeBytes / 1024 / 1024).toFixed(2),
+      },
+    };
   }
 
   /** Get top memories by access count and importance for reflection */
@@ -591,6 +707,142 @@ export class MemoryEngine {
     }
 
     return { clusters: clusters.map(c => ({ ids: c.ids, contents: c.contents })) };
+  }
+
+  /**
+   * Dedup: find memories with cosine similarity above threshold.
+   * Uses kNN search per memory for efficiency (avoids full O(n²) scan).
+   * Defaults: threshold=0.9, maxMemories=3000, dryRun=true.
+   */
+  async dedup(options: {
+    threshold?: number;
+    maxMemories?: number;
+    dryRun?: boolean;
+    auto?: boolean;
+  } = {}): Promise<{ groups: DedupGroup[]; totalDuplicates: number }> {
+    const threshold = options.threshold ?? 0.9;
+    const maxMemories = options.maxMemories ?? 3000;
+    const isDryRun = options.dryRun !== false || !options.auto; // default is dry-run
+    const tbl = await this.table();
+
+    console.log(`Loading memories for dedup (limit: ${maxMemories}, threshold: ${threshold})...`);
+    const allRows = await tbl.query()
+      .select(['id', 'content', 'importance', 'type', 'vector'])
+      .toArray();
+
+    // Prioritise high-importance memories — they are more likely to be referenced
+    const rows = allRows
+      .sort((a: any, b: any) => b.importance - a.importance)
+      .slice(0, maxMemories);
+
+    if (rows.length < 2) return { groups: [], totalDuplicates: 0 };
+
+    console.log(`Comparing ${rows.length} memories with kNN similarity scan...`);
+
+    // Build in-memory vector map for fast cosine computation
+    const idToVec = new Map<string, number[]>();
+    const idToRow = new Map<string, any>();
+    for (const r of rows) {
+      idToVec.set(r.id, Array.from(r.vector as Float32Array));
+      idToRow.set(r.id, r);
+    }
+
+    // Union-Find for grouping duplicates
+    const parent = new Map<string, string>();
+    const find = (id: string): string => {
+      if (parent.get(id) !== id) parent.set(id, find(parent.get(id)!));
+      return parent.get(id)!;
+    };
+    const union = (a: string, b: string) => {
+      parent.set(find(a), find(b));
+    };
+    for (const r of rows) parent.set(r.id, r.id);
+
+    const pairSim = new Map<string, number>(); // "id1:id2" → similarity
+
+    let processed = 0;
+    for (const row of rows) {
+      processed++;
+      if (processed % 200 === 0) {
+        console.log(`  Scanned ${processed}/${rows.length}...`);
+        await new Promise(r => setImmediate(r));
+      }
+
+      const vec = idToVec.get(row.id)!;
+      // Use LanceDB kNN search to find nearest neighbors efficiently
+      let neighbors: any[];
+      try {
+        neighbors = await tbl.search(vec).limit(6).toArray();
+      } catch { continue; }
+
+      for (const nb of neighbors) {
+        if (nb.id === row.id) continue;
+        if (!idToRow.has(nb.id)) continue; // Outside our working set
+        const nbVec = idToVec.get(nb.id)!;
+        if (!nbVec) continue;
+        const sim = cosineSimilarity(vec, nbVec);
+        if (sim >= threshold) {
+          const key = [row.id, nb.id].sort().join(':');
+          if (!pairSim.has(key)) pairSim.set(key, sim);
+          union(row.id, nb.id);
+        }
+      }
+    }
+
+    // Build clusters from union-find groups
+    const clusterMap = new Map<string, string[]>();
+    for (const r of rows) {
+      const root = find(r.id);
+      if (root !== r.id || clusterMap.has(root)) {
+        const cluster = clusterMap.get(root) ?? [root];
+        if (!cluster.includes(r.id)) cluster.push(r.id);
+        clusterMap.set(root, cluster);
+      }
+    }
+
+    // Build DedupGroup: sort by importance desc, keep highest, remove rest
+    const groups: DedupGroup[] = [];
+    const toDelete: string[] = [];
+
+    for (const [root, ids] of clusterMap.entries()) {
+      if (ids.length < 2) continue;
+      const members = ids
+        .map(id => idToRow.get(id)!)
+        .filter(Boolean)
+        .sort((a: any, b: any) => b.importance - a.importance);
+
+      const keepRow = members[0];
+      const removeRows = members.slice(1);
+
+      // Best similarity pair for display
+      const bestSim = Math.max(
+        ...[...pairSim.entries()]
+          .filter(([k]) => ids.some(id => k.startsWith(id + ':') || k.endsWith(':' + id)))
+          .map(([, v]) => v),
+        threshold,
+      );
+
+      const group: DedupGroup = {
+        keep: { id: keepRow.id, content: keepRow.content, importance: keepRow.importance, type: keepRow.type },
+        remove: removeRows.map((r: any) => ({ id: r.id, content: r.content, importance: r.importance, type: r.type })),
+        similarity: +bestSim.toFixed(4),
+      };
+      groups.push(group);
+      if (!isDryRun) toDelete.push(...removeRows.map((r: any) => r.id));
+    }
+
+    // Sort groups by similarity descending (most-certain dupes first)
+    groups.sort((a, b) => b.similarity - a.similarity);
+
+    const totalDuplicates = groups.reduce((s, g) => s + g.remove.length, 0);
+
+    if (!isDryRun && toDelete.length > 0) {
+      console.log(`\nDeleting ${toDelete.length} duplicate memories...`);
+      await this.deleteBatch(toDelete);
+      console.log(`✓ Deleted ${toDelete.length} duplicates, kept ${groups.length} canonical memories.`);
+    }
+
+    return { groups, totalDuplicates };
   }
 
   /** Audit: find duplicates, orphans, stale memories */

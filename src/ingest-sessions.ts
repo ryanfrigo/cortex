@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, existsSync, writeFileSync, mkdirSync } from 
 import { join, basename } from 'path';
 import { MemoryEngine } from './engine.js';
 import type { MemoryInput, MemoryType } from './types.js';
+import Anthropic from '@anthropic-ai/sdk';
 
 const SESSIONS_DIR = join(process.env.HOME || '~', '.openclaw/agents/main/sessions');
 const CHECKPOINT_PATH = join(process.env.HOME || '~', '.cortex/session-ingest-checkpoint.json');
@@ -157,7 +158,168 @@ function isSubstantiveExchange(exchange: ConversationExchange): boolean {
   return true;
 }
 
-export async function ingestSessions(opts: { force?: boolean; limit?: number; verbose?: boolean } = {}): Promise<{ ingested: number; skipped: number; exchanges: number }> {
+/** All known project names for auto-tagging */
+const ALL_PROJECTS = [
+  'myapp', 'kalshi', 'market', 'debate', 'cortex', 'videogen',
+  'openclaw', 'remotion', 'vapi', 'convex', 'vercel', 'stripe',
+];
+
+/**
+ * Detect all projects mentioned in text.
+ * Returns array of matching project names.
+ */
+function extractAllProjects(text: string): string[] {
+  const lower = text.toLowerCase();
+  return ALL_PROJECTS.filter(p => lower.includes(p));
+}
+
+/**
+ * AI-powered session summarization.
+ * Condenses a session into key decisions, learnings, outcomes.
+ * Returns structured MemoryInput[] ready to save.
+ */
+async function summarizeSessionWithAI(
+  exchanges: ConversationExchange[],
+  sessionId: string,
+): Promise<MemoryInput[]> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    console.warn('  ANTHROPIC_API_KEY not set — falling back to heuristic summarization');
+    return [];
+  }
+
+  // Build compact transcript (limit tokens)
+  const transcript = exchanges
+    .slice(0, 15)
+    .map((ex, i) =>
+      `[${i + 1}] User: ${ex.userMessage.slice(0, 400)}\n    Assistant: ${ex.assistantMessage.slice(0, 600)}`,
+    )
+    .join('\n\n');
+
+  const client = new Anthropic({ apiKey });
+
+  let response: Anthropic.Message;
+  try {
+    response = await client.messages.create({
+      model: 'claude-haiku-4-5',
+      max_tokens: 1024,
+      messages: [
+        {
+          role: 'user',
+          content: `Analyze this AI agent session transcript and extract only the highest-value information.
+
+SESSION TRANSCRIPT:
+${transcript}
+
+Respond with ONLY a JSON object (no markdown, no explanation) with these fields:
+{
+  "summary": "2-3 sentence session summary",
+  "decisions": ["decision 1", "decision 2"],
+  "learnings": ["lesson 1", "lesson 2"],
+  "outcomes": ["concrete outcome 1"],
+  "projects": ["project name 1"],
+  "hasHighValue": true
+}
+
+Rules:
+- decisions: only concrete choices made (skip trivial)
+- learnings: only genuine lessons/corrections/insights
+- outcomes: only tangible deliverables (code shipped, configs changed, etc.)
+- projects: project names mentioned (myapp, kalshi, market, cortex, etc.)
+- hasHighValue: false if this session was just chit-chat or routine work
+- Max 5 items per array, prefer fewer high-quality items over many weak ones
+- Empty arrays are fine`,
+        },
+      ],
+    });
+  } catch (err) {
+    console.warn(`  AI summarization failed: ${(err as Error).message}`);
+    return [];
+  }
+
+  let parsed: {
+    summary: string;
+    decisions: string[];
+    learnings: string[];
+    outcomes: string[];
+    projects: string[];
+    hasHighValue: boolean;
+  };
+
+  try {
+    const text = response.content[0].type === 'text' ? response.content[0].text : '';
+    // Strip markdown code fences if present
+    const cleaned = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
+    parsed = JSON.parse(cleaned);
+  } catch {
+    console.warn('  Failed to parse AI response — falling back to heuristic');
+    return [];
+  }
+
+  if (!parsed.hasHighValue) return [];
+
+  const inputs: MemoryInput[] = [];
+  const sessionTags = ['session', 'ai-summary', ...(parsed.projects || [])];
+  const project = parsed.projects?.[0];
+
+  // Session summary memory
+  if (parsed.summary) {
+    inputs.push({
+      content: `[Session ${sessionId.slice(0, 8)}] ${parsed.summary}`,
+      type: 'semantic' as MemoryType,
+      importance: 0.5,
+      source: `session:${sessionId}:ai-summary`,
+      tags: sessionTags,
+      metadata: { project, isSummary: true, exchangeCount: exchanges.length },
+    });
+  }
+
+  // Decision memories — high importance
+  for (const decision of (parsed.decisions || []).slice(0, 5)) {
+    if (decision.trim()) {
+      inputs.push({
+        content: decision,
+        type: 'decision' as MemoryType,
+        importance: 0.7,
+        source: `session:${sessionId}`,
+        tags: [...sessionTags, 'decision'],
+        metadata: { project },
+      });
+    }
+  }
+
+  // Learning memories — high importance
+  for (const learning of (parsed.learnings || []).slice(0, 5)) {
+    if (learning.trim()) {
+      inputs.push({
+        content: learning,
+        type: 'lesson' as MemoryType,
+        importance: 0.7,
+        source: `session:${sessionId}`,
+        tags: [...sessionTags, 'lesson'],
+        metadata: { project },
+      });
+    }
+  }
+
+  // Outcome memories — medium-high importance
+  for (const outcome of (parsed.outcomes || []).slice(0, 5)) {
+    if (outcome.trim()) {
+      inputs.push({
+        content: outcome,
+        type: 'episodic' as MemoryType,
+        importance: 0.65,
+        source: `session:${sessionId}`,
+        tags: [...sessionTags, 'outcome'],
+        metadata: { project },
+      });
+    }
+  }
+
+  return inputs;
+}
+
+export async function ingestSessions(opts: { force?: boolean; limit?: number; verbose?: boolean; summarize?: boolean } = {}): Promise<{ ingested: number; skipped: number; exchanges: number }> {
   const checkpoint = opts.force ? { ingestedSessions: [], lastRun: '' } : loadCheckpoint();
   const ingestedSet = new Set(checkpoint.ingestedSessions);
 
@@ -202,41 +364,62 @@ export async function ingestSessions(opts: { force?: boolean; limit?: number; ve
         continue;
       }
 
-      const inputs: MemoryInput[] = substantive.map(ex => {
-        const fullText = ex.userMessage + ' ' + ex.assistantMessage;
-        const meta = extractMetadata(fullText);
-        return {
-          content: exchangeToMemoryContent(ex, sessionId),
-          type: 'session' as MemoryType,
-          importance: scoreImportance(ex),
-          source: `session:${sessionId}`,
-          tags: ['session', 'transcript'],
-          metadata: meta,
-        };
-      });
+      let inputs: MemoryInput[];
 
-      // Add session summary for multi-turn sessions
-      const summary = generateSessionSummary(substantive, sessionId);
-      if (summary) {
-        inputs.push({
-          content: summary,
-          type: 'session' as MemoryType,
-          importance: 0.6,
-          source: `session:${sessionId}:summary`,
-          tags: ['session', 'summary'],
-          metadata: {
-            project: extractProject(summary),
-            isSummary: true,
-            exchangeCount: substantive.length,
-          },
+      if (opts.summarize) {
+        // AI summarization: condense session to key decisions/learnings/outcomes
+        if (opts.verbose) process.stdout.write(`  [${i + 1}/${toProcess.length}] ${sessionId.slice(0, 8)} — summarizing with AI...`);
+        const aiInputs = await summarizeSessionWithAI(substantive, sessionId);
+        if (aiInputs.length > 0) {
+          inputs = aiInputs;
+          if (opts.verbose) console.log(` → ${aiInputs.length} memories`);
+        } else {
+          // Fallback: save a lightweight summary-only memory
+          if (opts.verbose) console.log(` → low-value session, skipping`);
+          ingestedSet.add(file.id);
+          continue;
+        }
+      } else {
+        // Standard heuristic ingestion — all substantive exchanges
+        inputs = substantive.map(ex => {
+          const fullText = ex.userMessage + ' ' + ex.assistantMessage;
+          const meta = extractMetadata(fullText);
+          // Enrich tags with all detected projects
+          const projects = extractAllProjects(fullText);
+          return {
+            content: exchangeToMemoryContent(ex, sessionId),
+            type: 'session' as MemoryType,
+            importance: scoreImportance(ex),
+            source: `session:${sessionId}`,
+            tags: ['session', 'transcript', ...projects],
+            metadata: { ...meta, ...(projects.length > 0 ? { projectNames: projects } as any : {}) } as any,
+          };
         });
+
+        // Add session summary for multi-turn sessions
+        const summary = generateSessionSummary(substantive, sessionId);
+        if (summary) {
+          const summaryProjects = extractAllProjects(summary);
+          inputs.push({
+            content: summary,
+            type: 'session' as MemoryType,
+            importance: 0.5, // Updated from 0.6 to match session default
+            source: `session:${sessionId}:summary`,
+            tags: ['session', 'summary', ...summaryProjects],
+            metadata: {
+              project: extractProject(summary),
+              isSummary: true,
+              exchangeCount: substantive.length,
+            },
+          });
+        }
       }
 
       allInputs.push(...inputs);
       ingestedSet.add(file.id);
 
-      if (opts.verbose || (i + 1) % 50 === 0) {
-        console.log(`  [${i + 1}/${toProcess.length}] ${sessionId.slice(0, 8)} — ${inputs.length} exchanges queued`);
+      if (!opts.summarize && (opts.verbose || (i + 1) % 50 === 0)) {
+        console.log(`  [${i + 1}/${toProcess.length}] ${sessionId.slice(0, 8)} — ${inputs.length} memories queued`);
       }
     }
 
