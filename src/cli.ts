@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { MemoryEngine } from './engine.js';
+import { MemoryEngine, defaultImportanceForType } from './engine.js';
 import { parseMarkdownFile, parseMarkdownFileSmart } from './import.js';
 import { ingestSessions } from './ingest-sessions.js';
 import { extractFromTranscript } from './extract.js';
@@ -19,8 +19,8 @@ program
   .command('save')
   .description('Save a memory')
   .argument('<content>', 'Memory content')
-  .option('-t, --type <type>', 'Memory type', 'semantic')
-  .option('-i, --importance <n>', 'Importance 0-1', '0.5')
+  .option('-t, --type <type>', 'Memory type (semantic|episodic|belief|reflection|decision|lesson|fact|...)', 'semantic')
+  .option('-i, --importance <n>', 'Importance 0-1 (default: auto from type: belief/reflection=0.8, decision/lesson=0.7, semantic=0.5, session=0.3)')
   .option('--tags <tags>', 'Comma-separated tags')
   .option('-s, --source <source>', 'Source identifier', 'cli')
   .option('--project <project>', 'Project name for metadata')
@@ -28,11 +28,17 @@ program
   .action(async (content: string, opts) => {
     const engine = new MemoryEngine();
     try {
+      const type = opts.type as MemoryType;
+      // Auto-compute importance from type if not explicitly provided
+      const importance = opts.importance !== undefined
+        ? parseFloat(opts.importance)
+        : defaultImportanceForType(type);
+
       const memory = await engine.save({
         content,
         namespace: opts.namespace,
-        type: opts.type as MemoryType,
-        importance: parseFloat(opts.importance),
+        type,
+        importance,
         source: opts.source,
         tags: opts.tags ? opts.tags.split(',').map((t: string) => t.trim()) : [],
         metadata: opts.project ? { project: opts.project } : undefined,
@@ -54,7 +60,8 @@ program
   .option('-n, --limit <n>', 'Max results', '5')
   .option('-t, --type <type>', 'Filter by type')
   .option('--min-importance <n>', 'Minimum importance')
-  .option('--min-vector <n>', 'Minimum vector similarity (0-1, default 0.25)')
+  .option('--min-vector <n>', 'Minimum vector similarity (0-1, default 0.3)')
+  .option('--min-score <n>', 'Minimum hybrid score (0-1, default 0.3) — primary noise filter')
   .option('--project <project>', 'Filter by project')
   .option('--namespace <ns>', 'Filter by namespace (exact match unless --namespace-prefix)')
   .option('--namespace-prefix', 'Treat --namespace as a prefix (matches subtrees, e.g. "projects/" matches all projects/*)')
@@ -71,6 +78,7 @@ program
         type: opts.type as MemoryType | undefined,
         minImportance: opts.minImportance ? parseFloat(opts.minImportance) : undefined,
         minVectorScore: opts.minVector ? parseFloat(opts.minVector) : undefined,
+        minScore: opts.minScore ? parseFloat(opts.minScore) : undefined,
         project: opts.project,
         depth,
       });
@@ -83,11 +91,11 @@ program
       const depthLabel = depth === 0 ? 'L0 abstracts' : depth === 1 ? 'L1 overviews' : 'L2 full';
       console.log(`Found ${results.length} memories [${depthLabel}]:\n`);
       for (const r of results) {
-        console.log(`[${r.memory.id.slice(0, 8)}] (score: ${r.score.toFixed(3)}) ${r.memory.namespace}/${r.memory.type}`);
+        console.log(`[${r.memory.id.slice(0, 8)}] (score: ${r.score.toFixed(3)}, imp: ${r.memory.importance.toFixed(2)}) ${r.memory.namespace}/${r.memory.type}`);
         console.log(`  ${r.memory.content}`);
         if (r.memory.tags.length) console.log(`  Tags: ${r.memory.tags.join(', ')}`);
         if (r.memory.metadata?.project) console.log(`  Project: ${r.memory.metadata.project}`);
-        console.log(`  Vector: ${r.vectorScore.toFixed(3)} | BM25: ${r.bm25Score.toFixed(3)} | Recency: ${r.recencyScore.toFixed(3)}`);
+        console.log(`  Vector: ${r.vectorScore.toFixed(3)} | BM25: ${r.bm25Score.toFixed(3)} | Recency: ${r.recencyScore.toFixed(3)} | Importance: ${r.importanceScore.toFixed(3)}`);
         console.log();
       }
     } catch (err) {
@@ -119,13 +127,19 @@ program
 program
   .command('status')
   .description('Show memory database status')
-  .action(async () => {
+  .option('--by-type', 'Show oldest/newest breakdown per type')
+  .action(async (opts) => {
     const engine = new MemoryEngine();
     try {
       const stats = await engine.stats();
       console.log('Cortex Memory Status');
       console.log('====================');
       console.log(`Total memories: ${stats.totalMemories}`);
+      console.log(`\nImportance:`);
+      console.log(`  Average: ${stats.avgImportance}`);
+      console.log(`  High  (>0.7):    ${stats.byImportanceTier.high}  (${stats.totalMemories > 0 ? ((stats.byImportanceTier.high / stats.totalMemories) * 100).toFixed(1) : 0}%)`);
+      console.log(`  Medium (0.4-0.7): ${stats.byImportanceTier.medium}  (${stats.totalMemories > 0 ? ((stats.byImportanceTier.medium / stats.totalMemories) * 100).toFixed(1) : 0}%)`);
+      console.log(`  Low   (<0.4):    ${stats.byImportanceTier.low}  (${stats.totalMemories > 0 ? ((stats.byImportanceTier.low / stats.totalMemories) * 100).toFixed(1) : 0}%)`);
       console.log('\nBy Type:');
       for (const [type, count] of Object.entries(stats.byType).sort((a, b) => b[1] - a[1])) {
         console.log(`  ${type}: ${count}`);
@@ -134,7 +148,24 @@ program
       for (const [ns, count] of Object.entries(stats.byNamespace).sort((a, b) => b[1] - a[1])) {
         console.log(`  ${ns}: ${count}`);
       }
-      console.log(`\nDB size: ${(stats.dbSizeBytes / 1024).toFixed(1)} KB`);
+      if (opts.byType) {
+        console.log('\nOldest by Type:');
+        for (const [type, date] of Object.entries(stats.oldestByType).sort((a, b) => a[1].localeCompare(b[1]))) {
+          console.log(`  ${type}: ${new Date(date).toLocaleDateString()}`);
+        }
+        console.log('\nNewest by Type:');
+        for (const [type, date] of Object.entries(stats.newestByType).sort((a, b) => b[1].localeCompare(a[1]))) {
+          console.log(`  ${type}: ${new Date(date).toLocaleDateString()}`);
+        }
+      }
+      if (stats.storageSummary) {
+        console.log(`\nStorage:`);
+        console.log(`  Table data: ${stats.storageSummary.tableMb} MB`);
+        console.log(`  Indexes:    ${stats.storageSummary.indexMb} MB`);
+        console.log(`  Total:      ${stats.storageSummary.totalMb} MB`);
+      } else {
+        console.log(`\nDB size: ${(stats.dbSizeBytes / 1024).toFixed(1)} KB`);
+      }
       if (stats.oldestMemory) console.log(`Oldest: ${stats.oldestMemory}`);
       if (stats.newestMemory) console.log(`Newest: ${stats.newestMemory}`);
     } finally {
@@ -362,12 +393,14 @@ program
   .option('--force', 'Re-ingest all sessions (ignore checkpoint)')
   .option('-n, --limit <n>', 'Max sessions to process')
   .option('-v, --verbose', 'Show per-session progress')
+  .option('--summarize', 'Use AI summarization to condense sessions into key decisions/learnings (requires ANTHROPIC_API_KEY)')
   .action(async (opts) => {
     try {
       await ingestSessions({
         force: opts.force,
         limit: opts.limit ? parseInt(opts.limit) : undefined,
         verbose: opts.verbose,
+        summarize: opts.summarize,
       });
     } catch (err) {
       console.error('Error ingesting sessions:', (err as Error).message);
@@ -442,6 +475,65 @@ program
         if (c.contents.length > 3) console.log(`    ... and ${c.contents.length - 3} more`);
         console.log();
       }
+    } finally {
+      engine.close();
+    }
+  });
+
+program
+  .command('dedup')
+  .description('Find and remove near-duplicate memories (cosine similarity > threshold)')
+  .option('--threshold <n>', 'Cosine similarity threshold (0-1)', '0.9')
+  .option('--max-memories <n>', 'Max memories to scan (sorted by importance)', '3000')
+  .option('--auto', 'Auto-delete lower-importance duplicates (non-interactive)')
+  .option('--dry-run', 'Preview duplicates without deleting (default)')
+  .action(async (opts) => {
+    const engine = new MemoryEngine();
+    try {
+      const threshold = parseFloat(opts.threshold);
+      const maxMemories = parseInt(opts.maxMemories);
+      const auto = !!opts.auto;
+      const dryRun = !auto; // dry-run unless --auto is set
+
+      if (dryRun) {
+        console.log(`Dedup scan (DRY RUN — use --auto to delete)\n`);
+      } else {
+        console.log(`Dedup scan (AUTO MODE — will delete duplicates)\n`);
+      }
+
+      const result = await engine.dedup({ threshold, maxMemories, dryRun, auto });
+
+      if (result.groups.length === 0) {
+        console.log(`✓ No duplicates found (threshold: ${threshold}, scanned up to ${maxMemories} memories).`);
+        return;
+      }
+
+      console.log(`\nFound ${result.groups.length} duplicate groups (${result.totalDuplicates} memories to remove):\n`);
+
+      for (const [i, group] of result.groups.entries()) {
+        console.log(`Group ${i + 1} (similarity: ${group.similarity.toFixed(4)}):`);
+        console.log(`  ✓ KEEP  [${group.keep.id.slice(0, 8)}] (imp: ${group.keep.importance.toFixed(2)}, ${group.keep.type})`);
+        console.log(`          ${group.keep.content.slice(0, 120).replace(/\n/g, ' ')}`);
+        for (const rem of group.remove) {
+          console.log(`  ✗ DROP  [${rem.id.slice(0, 8)}] (imp: ${rem.importance.toFixed(2)}, ${rem.type})`);
+          console.log(`          ${rem.content.slice(0, 120).replace(/\n/g, ' ')}`);
+        }
+        console.log();
+        if (i >= 19 && result.groups.length > 20) {
+          console.log(`  ... and ${result.groups.length - 20} more groups`);
+          break;
+        }
+      }
+
+      if (dryRun) {
+        console.log(`\nDry run complete. ${result.totalDuplicates} duplicates identified.`);
+        console.log(`Run with --auto to delete lower-importance duplicates automatically.`);
+      } else {
+        console.log(`\n✓ Deleted ${result.totalDuplicates} duplicate memories.`);
+      }
+    } catch (err) {
+      console.error('Error during dedup:', (err as Error).message);
+      process.exit(1);
     } finally {
       engine.close();
     }
