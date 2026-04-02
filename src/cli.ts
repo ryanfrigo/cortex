@@ -1490,4 +1490,300 @@ program
     }
   });
 
+// ─── Graph Commands ──────────────────────────────────────────────────────────
+
+import { KnowledgeGraph } from './graph.js';
+
+const graphCmd = program
+  .command('graph')
+  .description('Knowledge graph — entities, relationships, traversal');
+
+graphCmd
+  .command('entity <name>')
+  .description('Show entity details, relationships, and linked memory IDs')
+  .action(async (name: string) => {
+    const engine = new MemoryEngine();
+    try {
+      const entity = engine.graph.getEntity(name);
+      if (!entity) {
+        console.log(`Entity not found: "${name}"`);
+        return;
+      }
+      console.log(`\n📌 Entity: ${entity.name}`);
+      console.log(`   ID:      ${entity.id.slice(0, 8)}`);
+      console.log(`   Type:    ${entity.type}`);
+      console.log(`   Created: ${new Date(entity.createdAt).toLocaleDateString()}`);
+
+      const rels = engine.graph.getRelationships(entity.id);
+      if (rels.length > 0) {
+        console.log(`\n🔗 Relationships (${rels.length}):`);
+        for (const { relationship: rel, otherEntity, direction } of rels) {
+          const arrow = direction === 'outgoing'
+            ? `  → [${rel.relation}] → ${otherEntity.name} (w:${rel.weight.toFixed(1)})`
+            : `  ← [${rel.relation}] ← ${otherEntity.name} (w:${rel.weight.toFixed(1)})`;
+          console.log(arrow);
+        }
+      }
+
+      const memIds = engine.graph.getLinkedMemoryIds(entity.id);
+      if (memIds.length > 0) {
+        console.log(`\n🧠 Linked memories (${memIds.length}):`);
+        for (const mid of memIds.slice(0, 10)) {
+          const mem = await engine.get(mid);
+          if (mem) {
+            console.log(`  [${mid.slice(0, 8)}] ${mem.content.slice(0, 80)}…`);
+          } else {
+            console.log(`  [${mid.slice(0, 8)}] (deleted)`);
+          }
+        }
+        if (memIds.length > 10) console.log(`  … and ${memIds.length - 10} more`);
+      }
+      console.log();
+    } catch (err) {
+      console.error('Error:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+graphCmd
+  .command('relations <entity>')
+  .description('Show all relationships for an entity')
+  .action(async (name: string) => {
+    const engine = new MemoryEngine();
+    try {
+      const entity = engine.graph.getEntity(name);
+      if (!entity) {
+        console.log(`Entity not found: "${name}"`);
+        return;
+      }
+      const rels = engine.graph.getRelationships(entity.id);
+      if (rels.length === 0) {
+        console.log(`No relationships found for "${entity.name}".`);
+        return;
+      }
+      console.log(`\n🔗 ${rels.length} relationships for "${entity.name}":\n`);
+      for (const { relationship: rel, otherEntity, direction } of rels) {
+        const line = direction === 'outgoing'
+          ? `  ${entity.name} --[${rel.relation}]--> ${otherEntity.name}`
+          : `  ${otherEntity.name} --[${rel.relation}]--> ${entity.name}`;
+        console.log(`${line}  (weight: ${rel.weight.toFixed(1)}, mem: ${rel.memoryId.slice(0, 8)})`);
+      }
+      console.log();
+    } catch (err) {
+      console.error('Error:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+graphCmd
+  .command('traverse <entity>')
+  .description('BFS traversal showing connected entities')
+  .option('--depth <n>', 'Max traversal depth', '2')
+  .action(async (name: string, opts) => {
+    const engine = new MemoryEngine();
+    try {
+      const maxDepth = parseInt(opts.depth ?? '2', 10);
+      const nodes = engine.graph.traverse(name, maxDepth);
+      if (nodes.length === 0) {
+        console.log(`Entity not found: "${name}"`);
+        return;
+      }
+      console.log(`\n🕸️  Graph traversal from "${name}" (depth ≤ ${maxDepth}):\n`);
+      for (const { entity, depth, viaRelation, fromEntity } of nodes) {
+        const indent = '  '.repeat(depth);
+        const via = viaRelation ? ` via ${fromEntity} ${viaRelation}` : '';
+        console.log(`${indent}[d${depth}] ${entity.name} (${entity.type})${via}`);
+      }
+      console.log();
+    } catch (err) {
+      console.error('Error:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+graphCmd
+  .command('stats')
+  .description('Entity count, relationship count, top entities by connections')
+  .action(async () => {
+    const engine = new MemoryEngine();
+    try {
+      const s = engine.graph.stats();
+      console.log('\n📊 Knowledge Graph Stats\n');
+      console.log(`  Entities:      ${s.entityCount}`);
+      console.log(`  Relationships: ${s.relationshipCount}`);
+      console.log(`  Mentions:      ${s.mentionCount}`);
+
+      console.log('\n  By type:');
+      for (const [type, count] of Object.entries(s.byType).sort((a, b) => b[1] - a[1])) {
+        console.log(`    ${type.padEnd(12)} ${count}`);
+      }
+
+      if (s.topEntities.length > 0) {
+        console.log('\n  Top entities by connections:');
+        for (const e of s.topEntities) {
+          console.log(`    ${e.name.padEnd(30)} (${e.type}) — ${e.connections} connections`);
+        }
+      }
+      console.log();
+    } catch (err) {
+      console.error('Error:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+graphCmd
+  .command('search <query>')
+  .description('Fuzzy search entities by name')
+  .action(async (query: string) => {
+    const engine = new MemoryEngine();
+    try {
+      const results = engine.graph.searchEntities(query);
+      if (results.length === 0) {
+        console.log(`No entities found matching "${query}".`);
+        return;
+      }
+      console.log(`\n🔍 ${results.length} entities matching "${query}":\n`);
+      for (const e of results) {
+        console.log(`  [${e.id.slice(0, 8)}] ${e.name.padEnd(30)} (${e.type})`);
+      }
+      console.log();
+    } catch (err) {
+      console.error('Error:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+// ─── Contradictions Commands ─────────────────────────────────────────────────
+
+const contraCmd = program
+  .command('contradictions')
+  .description('Contradiction detection — view, check, resolve conflicts between memories');
+
+contraCmd
+  .command('list')
+  .description('List all unresolved contradictions')
+  .option('--all', 'Include resolved contradictions')
+  .action(async (opts) => {
+    const engine = new MemoryEngine();
+    try {
+      const items = opts.all
+        ? engine.contradictions.getAll()
+        : engine.contradictions.getUnresolved();
+
+      if (items.length === 0) {
+        console.log(opts.all ? 'No contradictions found.' : 'No unresolved contradictions. ✅');
+        return;
+      }
+
+      console.log(`\n⚡ ${items.length} contradiction${items.length > 1 ? 's' : ''}${opts.all ? ' (all)' : ' (unresolved)'}:\n`);
+      for (const c of items) {
+        const resolved = c.resolved_at ? ' ✅ RESOLVED' : '';
+        console.log(`  [${c.id.slice(0, 8)}] score: ${c.score.toFixed(2)} | type: ${c.type}${resolved}`);
+        console.log(`    ${c.description}`);
+        console.log(`    memories: ${c.memory_a.slice(0, 8)} ↔ ${c.memory_b.slice(0, 8)}`);
+        if (c.resolution) console.log(`    resolution: ${c.resolution}`);
+        console.log();
+      }
+    } catch (err) {
+      console.error('Error:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+contraCmd
+  .command('check <memory-id>')
+  .description('Check a specific memory against all similar memories for contradictions')
+  .action(async (memId: string) => {
+    const engine = new MemoryEngine();
+    try {
+      const mem = await engine.get(memId);
+      if (!mem) {
+        // Try prefix match
+        const results = await engine.search({ query: '', limit: 1000, depth: 0 });
+        const match = results.find(r => r.memory.id.startsWith(memId));
+        if (!match) {
+          console.error(`Memory not found: ${memId}`);
+          process.exit(1);
+        }
+        const fullMem = await engine.get(match.memory.id);
+        if (!fullMem) { console.error('Memory not found'); process.exit(1); }
+
+        console.log(`\n🔍 Checking memory ${fullMem.id.slice(0, 8)}: "${fullMem.content.slice(0, 80)}…"\n`);
+        const similar = await engine.search({ query: fullMem.content, limit: 10, minVectorScore: 0.4, depth: 2 });
+        const candidates = similar.filter(r => r.memory.id !== fullMem.id).map(r => r.memory);
+        const found = engine.contradictions.checkAgainstMemories(fullMem, candidates);
+
+        if (found.length === 0) {
+          console.log('No contradictions found. ✅');
+        } else {
+          console.log(`Found ${found.length} contradiction(s):\n`);
+          for (const c of found) {
+            console.log(`  [${c.id.slice(0, 8)}] score: ${c.score.toFixed(2)} | type: ${c.type}`);
+            console.log(`    ${c.description}\n`);
+          }
+        }
+        return;
+      }
+
+      console.log(`\n🔍 Checking memory ${mem.id.slice(0, 8)}: "${mem.content.slice(0, 80)}…"\n`);
+      const similar = await engine.search({ query: mem.content, limit: 10, minVectorScore: 0.4, depth: 2 });
+      const candidates = similar.filter(r => r.memory.id !== mem.id).map(r => r.memory);
+      const found = engine.contradictions.checkAgainstMemories(mem, candidates);
+
+      if (found.length === 0) {
+        console.log('No contradictions found. ✅');
+      } else {
+        console.log(`Found ${found.length} contradiction(s):\n`);
+        for (const c of found) {
+          console.log(`  [${c.id.slice(0, 8)}] score: ${c.score.toFixed(2)} | type: ${c.type}`);
+          console.log(`    ${c.description}\n`);
+        }
+      }
+    } catch (err) {
+      console.error('Error:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
+contraCmd
+  .command('resolve <id>')
+  .description('Resolve a contradiction')
+  .option('--keep <side>', 'Which memory to keep: a, b, or both', 'both')
+  .action(async (id: string, opts) => {
+    const engine = new MemoryEngine();
+    try {
+      const contra = engine.contradictions.getById(id);
+      if (!contra) {
+        console.error(`Contradiction not found: ${id}`);
+        process.exit(1);
+      }
+      const resolution = `Manually resolved: keep=${opts.keep}`;
+      const ok = engine.contradictions.resolveContradiction(contra.id, resolution);
+      if (ok) {
+        console.log(`✅ Resolved contradiction ${contra.id.slice(0, 8)}: ${resolution}`);
+      } else {
+        console.error('Failed to resolve.');
+      }
+    } catch (err) {
+      console.error('Error:', (err as Error).message);
+      process.exit(1);
+    } finally {
+      engine.close();
+    }
+  });
+
 program.parse();

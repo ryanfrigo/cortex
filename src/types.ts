@@ -90,6 +90,11 @@ export interface SearchOptions {
    *   2 — L2 full original content
    */
   depth?: 0 | 1 | 2;
+  /**
+   * When true, boost scores for memories that are linked to entities
+   * found in the query via the knowledge graph.
+   */
+  graphBoost?: boolean;
 }
 
 export interface SearchResult {

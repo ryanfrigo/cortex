@@ -8,6 +8,8 @@ import { generateTiers, contentAtDepth } from './tiers.js';
 import type { Memory, MemoryInput, MemoryType, SearchOptions, SearchResult, MemoryStats, MemoryMetadata, BeliefMetadata, PredictionMetadata, DedupGroup } from './types.js';
 import { statSync, readdirSync } from 'fs';
 import { join } from 'path';
+import { ContradictionDetector } from './contradictions.js';
+import { KnowledgeGraph } from './graph.js';
 
 /** Cosine similarity between two vectors */
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -65,10 +67,16 @@ export class MemoryEngine {
   private tablePromise: Promise<Table> | null = null;
   /** Cached set of column names in the live table (populated on first use) */
   private tableColumnsCache: Set<string> | null = null;
+  /** Knowledge graph for entity/relationship tracking */
+  readonly graph: KnowledgeGraph;
+  /** Contradiction detector for conflict detection between memories */
+  readonly contradictions: ContradictionDetector;
 
   constructor(dbPath?: string) {
     this.dbPath = dbPath ?? getDefaultDbPath();
     this.dbPromise = initDatabase(this.dbPath);
+    this.graph = new KnowledgeGraph();
+    this.contradictions = new ContradictionDetector();
   }
 
   private async table(): Promise<Table> {
@@ -146,10 +154,50 @@ export class MemoryEngine {
       } catch { /* ignore */ }
     }
 
-    return {
+    // Knowledge graph: extract entities + relationships from saved content
+    try { await this.graph.extractAndLink(id, input.content); } catch { /* non-fatal */ }
+
+    const savedMemory: Memory = {
       id, namespace, type, content: input.content, l0Content: l0, l1Content: l1, embedding, importance, source, tags, metadata,
       createdAt: now, updatedAt: now, accessedAt: now, accessCount: 0,
     };
+
+    // Contradiction detection: fire-and-forget against similar memories
+    this.runContradictionCheck(savedMemory).catch(() => {});
+
+    return savedMemory;
+  }
+
+  /** Run contradiction detection against similar memories (non-blocking) */
+  private async runContradictionCheck(memory: Memory): Promise<void> {
+    try {
+      // Find similar memories via vector search
+      const similar = await this.search({
+        query: memory.content,
+        limit: 10,
+        minVectorScore: 0.5,
+        depth: 2,
+      });
+
+      const candidates = similar
+        .filter(r => r.memory.id !== memory.id)
+        .map(r => r.memory);
+
+      if (candidates.length === 0) return;
+
+      const found = this.contradictions.checkAgainstMemories(memory, candidates);
+
+      // Auto-supersede beliefs
+      if (memory.type === 'belief' && found.length > 0) {
+        for (const contra of found) {
+          const otherId = contra.memory_a === memory.id ? contra.memory_b : contra.memory_a;
+          const otherMem = candidates.find(m => m.id === otherId);
+          if (otherMem && otherMem.type === 'belief') {
+            await this.contradictions.autoSupersedeBelief(memory, otherMem, contra.score, this);
+          }
+        }
+      }
+    } catch { /* non-fatal */ }
   }
 
   async rebuildFtsIndex(): Promise<void> {
@@ -214,7 +262,13 @@ export class MemoryEngine {
           vector: Array.from(embedding),
         }));
       }
-      if (rows.length > 0) await tbl.add(rows);
+      if (rows.length > 0) {
+        await tbl.add(rows);
+        // Knowledge graph: extract entities for each saved memory in this batch
+        for (const row of rows) {
+          try { await this.graph.extractAndLink(row.id as string, row.content as string); } catch { /* non-fatal */ }
+        }
+      }
       count += rows.length;
       process.stdout.write(`  Saved ${count}/${inputs.length} (skipped ${skipped} dupes)\r`);
     }
@@ -264,6 +318,23 @@ export class MemoryEngine {
 
     if (candidateMap.size === 0) return [];
 
+    // Graph boost: find memories linked to entities in the query
+    let graphBoostedIds: Set<string> = new Set();
+    if (options.graphBoost) {
+      try {
+        const queryEntities = this.graph.extractEntities(options.query);
+        if (queryEntities.length > 0) {
+          const entityIds: string[] = [];
+          for (const ent of queryEntities) {
+            const e = this.graph.getEntity(ent.name);
+            if (e) entityIds.push(e.id);
+          }
+          const boostedMemIds = this.graph.getMemoryIdsForEntities(entityIds);
+          graphBoostedIds = new Set(boostedMemIds);
+        }
+      } catch { /* non-fatal */ }
+    }
+
     // Minimum vector similarity threshold for vector-only candidates
     // FTS-only candidates get a pass if their BM25 score is strong enough
     const minVecScore = options.minVectorScore ?? 0.3;
@@ -311,7 +382,9 @@ export class MemoryEngine {
 
       const recencyScore = computeRecencyScore(m.accessed_at);
       const importanceScore = m.importance;
-      const score = computeHybridScore(vectorScore, bm25Score, recencyScore, importanceScore, m.access_count ?? 0, m.type as MemoryType);
+      let score = computeHybridScore(vectorScore, bm25Score, recencyScore, importanceScore, m.access_count ?? 0, m.type as MemoryType);
+      // Graph boost: additive bonus for memories linked to query entities
+      if (graphBoostedIds.has(m.id)) score = Math.min(1.0, score + 0.15);
 
       // Filter by minimum hybrid score to cut noise
       if (score < minHybridScore) continue;
@@ -1653,6 +1726,8 @@ export class MemoryEngine {
 
   close(): void {
     // LanceDB connections don't need explicit closing
+    try { this.graph.close(); } catch { /* ignore */ }
+    try { this.contradictions.close(); } catch { /* ignore */ }
   }
 
   private rowToMemory(row: any, depth: 0 | 1 | 2 = 2): Memory {
