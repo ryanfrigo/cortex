@@ -380,6 +380,16 @@ export class MemoryEngine {
         } catch { /* ignore */ }
       }
 
+      // Date range filters — compare ISO strings lexicographically (works for ISO 8601)
+      if (options.afterDate) {
+        const createdAt = m.created_at ?? m.createdAt ?? '';
+        if (createdAt && createdAt < options.afterDate) continue;
+      }
+      if (options.beforeDate) {
+        const createdAt = m.created_at ?? m.createdAt ?? '';
+        if (createdAt && createdAt >= options.beforeDate) continue;
+      }
+
       const recencyScore = computeRecencyScore(m.accessed_at);
       const importanceScore = m.importance;
       let score = computeHybridScore(vectorScore, bm25Score, recencyScore, importanceScore, m.access_count ?? 0, m.type as MemoryType);

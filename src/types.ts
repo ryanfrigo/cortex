@@ -95,6 +95,10 @@ export interface SearchOptions {
    * found in the query via the knowledge graph.
    */
   graphBoost?: boolean;
+  /** Filter to memories created after this ISO date string (e.g. "2026-03-01") */
+  afterDate?: string;
+  /** Filter to memories created before this ISO date string (e.g. "2026-04-01") */
+  beforeDate?: string;
 }
 
 export interface SearchResult {

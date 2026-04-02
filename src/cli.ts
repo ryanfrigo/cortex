@@ -66,6 +66,8 @@ program
   .option('--namespace <ns>', 'Filter by namespace (exact match unless --namespace-prefix)')
   .option('--namespace-prefix', 'Treat --namespace as a prefix (matches subtrees, e.g. "projects/" matches all projects/*)')
   .option('--depth <n>', 'Context depth: 0=L0 abstract (default, saves tokens), 1=L1 overview, 2=L2 full', '0')
+  .option('--after <date>', 'Filter to memories created after this date (YYYY-MM-DD)')
+  .option('--before <date>', 'Filter to memories created before this date (YYYY-MM-DD)')
   .action(async (query: string, opts) => {
     const engine = new MemoryEngine();
     try {
@@ -81,6 +83,8 @@ program
         minScore: opts.minScore ? parseFloat(opts.minScore) : undefined,
         project: opts.project,
         depth,
+        afterDate: opts.after,
+        beforeDate: opts.before,
       });
 
       if (results.length === 0) {

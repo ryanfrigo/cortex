@@ -34,6 +34,39 @@ const STRONG_VERBS = [
   'replaces', 'includes', 'requires', 'built', 'maintains', 'configures',
 ];
 
+// Known entities with explicit types — matched case-insensitively
+const KNOWN_ENTITIES: Array<{ pattern: RegExp; name: string; type: string }> = [
+  // Projects
+  { pattern: /\bMyApp\b/gi, name: 'MyApp', type: 'project' },
+  { pattern: /\bDebate\b/gi, name: 'Debate', type: 'project' },
+  { pattern: /\bMarket\b/gi, name: 'Market', type: 'project' },
+  { pattern: /\bCortex\b/gi, name: 'Cortex', type: 'project' },
+  { pattern: /\bKalshi\b/gi, name: 'Kalshi', type: 'project' },
+  { pattern: /\bVideoGen\b/gi, name: 'VideoGen', type: 'project' },
+  { pattern: /\bMyBrand\b/gi, name: 'MyBrand', type: 'project' },
+  // Companies
+  { pattern: /\bEquinix\b/gi, name: 'Equinix', type: 'company' },
+  { pattern: /\bVapi\b/gi, name: 'Vapi', type: 'company' },
+  { pattern: /\bStripe\b/gi, name: 'Stripe', type: 'company' },
+  { pattern: /\bVercel\b/gi, name: 'Vercel', type: 'company' },
+  { pattern: /\bConvex\b/gi, name: 'Convex', type: 'company' },
+  { pattern: /\bOpenAI\b/gi, name: 'OpenAI', type: 'company' },
+  { pattern: /\bAnthropic\b/gi, name: 'Anthropic', type: 'company' },
+  { pattern: /\bRetell\b/gi, name: 'Retell', type: 'company' },
+  { pattern: /\bMintlify\b/gi, name: 'Mintlify', type: 'company' },
+  // People
+  { pattern: /\bRyan\s+Frigo\b/gi, name: 'User', type: 'person' },
+  { pattern: /\bFamily\s+Member\b/gi, name: 'Family', type: 'person' },
+  { pattern: /\bTherapist\b/gi, name: 'Therapist', type: 'person' },
+  // Locations
+  { pattern: /\bMyCity\b/gi, name: 'MyCity', type: 'location' },
+  { pattern: /\bAustin\b/gi, name: 'Austin', type: 'location' },
+  { pattern: /\bBerkeley\b/gi, name: 'Berkeley', type: 'location' },
+  { pattern: /\bSan\s+Francisco\b/gi, name: 'San Francisco', type: 'location' },
+  { pattern: /\bBerlin\b/gi, name: 'Berlin', type: 'location' },
+  { pattern: /\bGermany\b/gi, name: 'Germany', type: 'location' },
+];
+
 // Common English words to skip when extracting proper nouns
 const COMMON_WORDS = new Set([
   'The', 'This', 'That', 'These', 'Those', 'It', 'Its', 'A', 'An',
@@ -128,6 +161,13 @@ export class KnowledgeGraph {
       }
     };
 
+    // 0. Known entities (highest priority — matched first so they're not re-classified)
+    for (const ke of KNOWN_ENTITIES) {
+      for (const m of text.matchAll(ke.pattern)) {
+        add(ke.name, ke.type);
+      }
+    }
+
     // 1. URLs
     const urlRe = /https?:\/\/[^\s,;)"'\]]+/g;
     for (const m of text.matchAll(urlRe)) add(m[0], 'url');
@@ -140,18 +180,10 @@ export class KnowledgeGraph {
     const companyRe = /\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*\s+(?:Inc|LLC|Corp|Ltd|Co|AI|Labs|Technologies|Systems|Solutions|Group|Media|Studio|Studios)\.?)\b/g;
     for (const m of text.matchAll(companyRe)) add(m[1], 'company');
 
-    // 4. camelCase / PascalCase identifiers (project names, tech names)
-    const camelRe = /\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b/g;
-    for (const m of text.matchAll(camelRe)) {
-      if (m[1].length > 4 && !COMMON_WORDS.has(m[1])) add(m[1], 'project');
-    }
-
-    // 5. Hyphenated/underscored lowercase identifiers (e.g. voice-charm, my_project)
-    const slugRe = /\b([a-z][a-z0-9]{2,}[-_][a-z][a-z0-9-_]{2,})\b/g;
-    for (const m of text.matchAll(slugRe)) add(m[1], 'project');
-
-    // 6. Proper nouns — capitalized words NOT at sentence start
+    // 4. Multi-word proper nouns only (First Last patterns — likely people)
+    // Skip single capitalized words (too noisy) and camelCase/slug identifiers
     const sentences = text.split(/(?<=[.!?])\s+/);
+    const knownNames = new Set(entities.map(e => e.name));
     for (const sentence of sentences) {
       const tokens = sentence.trim().split(/\s+/);
       let i = 1; // skip first token (sentence-initial capital)
@@ -159,14 +191,14 @@ export class KnowledgeGraph {
         const raw = tokens[i];
         const clean = raw.replace(/^[^a-zA-Z']+|[^a-zA-Z']+$/g, '');
         if (clean.length >= 2 && /^[A-Z][a-z]/.test(clean) && !COMMON_WORDS.has(clean)) {
-          // Peek ahead for multi-word proper noun (e.g. "User")
+          // Only extract multi-word proper nouns (First Last = likely a person)
           const rawNext = tokens[i + 1] ?? '';
           const cleanNext = rawNext.replace(/^[^a-zA-Z']+|[^a-zA-Z']+$/g, '');
           if (cleanNext && /^[A-Z][a-z]/.test(cleanNext) && !COMMON_WORDS.has(cleanNext)) {
-            add(`${clean} ${cleanNext}`, 'person');
+            const fullName = `${clean} ${cleanNext}`;
+            if (!knownNames.has(fullName)) add(fullName, 'person');
             i += 2;
           } else {
-            add(clean, 'term');
             i++;
           }
         } else {
@@ -219,9 +251,10 @@ export class KnowledgeGraph {
       }
 
       // Co-occurrence: entities sharing the same sentence = weak relationship
+      // Cap at 6 entities per sentence to avoid combinatorial explosion
       const inSentence = entityNames.filter(n =>
         sentence.toLowerCase().includes(n.toLowerCase()),
-      );
+      ).slice(0, 6);
       for (let i = 0; i < inSentence.length; i++) {
         for (let j = i + 1; j < inSentence.length; j++) {
           const a = inSentence[i];
