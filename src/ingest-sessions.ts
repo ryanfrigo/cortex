@@ -160,7 +160,7 @@ function isSubstantiveExchange(exchange: ConversationExchange): boolean {
 
 /** All known project names for auto-tagging */
 const ALL_PROJECTS = [
-  'myapp', 'kalshi', 'market', 'debate', 'cortex', 'videogen',
+  'myapp', 'trading', 'dashboard', 'blog', 'docs', 'api',
   'openclaw', 'remotion', 'vapi', 'convex', 'vercel', 'stripe',
 ];
 
@@ -225,7 +225,7 @@ Rules:
 - decisions: only concrete choices made (skip trivial)
 - learnings: only genuine lessons/corrections/insights
 - outcomes: only tangible deliverables (code shipped, configs changed, etc.)
-- projects: project names mentioned (myapp, kalshi, market, cortex, etc.)
+- projects: project names mentioned (myapp, trading, dashboard, etc.)
 - hasHighValue: false if this session was just chit-chat or routine work
 - Max 5 items per array, prefer fewer high-quality items over many weak ones
 - Empty arrays are fine`,
@@ -445,7 +445,7 @@ export async function ingestSessions(opts: { force?: boolean; limit?: number; ve
 
 function extractProject(text: string): string | undefined {
   const lower = text.toLowerCase();
-  const projects = ['myapp', 'kalshi', 'market', 'debate', 'cortex', 'videogen'];
+  const projects = ['myapp', 'trading', 'dashboard', 'blog', 'docs', 'api'];
   for (const p of projects) {
     if (lower.includes(p)) return p;
   }

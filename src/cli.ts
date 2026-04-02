@@ -607,7 +607,7 @@ program
   .argument('<statement>', 'Belief statement')
   .option('-c, --confidence <n>', 'Confidence level 0.0-1.0', '0.8')
   .option('-d, --domain <domain>', 'Belief domain (user|projects|self|world)', 'self')
-  .option('--holder <holder>', 'Belief holder (user|agent|shared)', 'orion')
+  .option('--holder <holder>', 'Belief holder (user|agent|shared)', 'agent')
   .option('--tags <tags>', 'Comma-separated tags')
   .action(async (statement: string, opts) => {
     const engine = new MemoryEngine();
@@ -646,11 +646,11 @@ program
     try {
       if (opts.compare) {
         // Show beliefs from both holders side by side
-        const userBeliefs = await engine.getBeliefs({ domain: opts.domain, holder: 'ryan', staleAfterDays: 7 });
-        const agentBeliefs = await engine.getBeliefs({ domain: opts.domain, holder: 'orion', staleAfterDays: 7 });
+        const userBeliefs = await engine.getBeliefs({ domain: opts.domain, holder: 'user', staleAfterDays: 7 });
+        const agentBeliefs = await engine.getBeliefs({ domain: opts.domain, holder: 'agent', staleAfterDays: 7 });
 
         console.log('Belief Comparison\n');
-        console.log('Ryan\'s Beliefs:');
+        console.log('User\'s Beliefs:');
         for (const belief of userBeliefs.slice(0, 10)) {
           const meta = belief.metadata as any;
           const confidence = meta?.confidence || 0.5;
@@ -658,7 +658,7 @@ program
           console.log(`  [${belief.id.slice(0, 8)}] ${confidence.toFixed(2)}${gap} - ${belief.content.slice(0, 80)}`);
         }
 
-        console.log('\nOrion\'s Beliefs:');
+        console.log('\nAgent\'s Beliefs:');
         for (const belief of agentBeliefs.slice(0, 10)) {
           const meta = belief.metadata as any;
           const confidence = meta?.confidence || 0.5;
@@ -1081,7 +1081,7 @@ program
   .argument('<statement>', 'Prediction statement')
   .option('-c, --confidence <n>', 'Confidence level 0.0-1.0', '0.5')
   .option('--by <deadline>', 'Deadline (ISO date: YYYY-MM-DD)', new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0])
-  .option('--holder <holder>', 'Prediction holder (user|agent|shared)', 'orion')
+  .option('--holder <holder>', 'Prediction holder (user|agent|shared)', 'agent')
   .option('-d, --domain <domain>', 'Domain (user|projects|self|world)', 'self')
   .action(async (statement: string, opts) => {
     const engine = new MemoryEngine();
@@ -1261,7 +1261,7 @@ program
 program
   .command('gaps')
   .description('Show stated vs revealed belief gaps')
-  .option('--holder <holder>', 'Filter by holder', 'orion')
+  .option('--holder <holder>', 'Filter by holder', 'agent')
   .action(async (opts) => {
     const engine = new MemoryEngine();
     try {
@@ -1303,7 +1303,7 @@ program
   .command('behavior')
   .description('Log a behavioral signal')
   .argument('<description>', 'Behavior description')
-  .option('--holder <holder>', 'Behavior holder (user|agent|shared)', 'orion')
+  .option('--holder <holder>', 'Behavior holder (user|agent|shared)', 'agent')
   .option('--beliefs <ids>', 'Comma-separated belief IDs this relates to')
   .action(async (description: string, opts) => {
     const engine = new MemoryEngine();

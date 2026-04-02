@@ -33,7 +33,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'object',
             description: 'Optional metadata',
             properties: {
-              project: { type: 'string', description: 'Project name (e.g. myapp, kalshi)' },
+              project: { type: 'string', description: 'Project name (e.g. myapp, trading)' },
               confidence: { type: 'number', description: '0-1, how verified' },
               supersedes: { type: 'string', description: 'ID of memory this replaces' },
               expiresAt: { type: 'string', description: 'ISO 8601 expiry date' },

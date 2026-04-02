@@ -86,8 +86,8 @@ Organize memories into hierarchical namespaces — like a filesystem for knowled
 | Namespace | Purpose |
 |-----------|---------|
 | `health` | Food, workouts, sleep, body metrics |
-| `projects/myapp` | MyApp-specific memories |
-| `projects/kalshi` | Kalshi-specific memories |
+| `projects/myapp` | App-specific memories |
+| `projects/trading` | Trading-specific memories |
 | `user/preferences` | Personal settings and preferences |
 | `user/people` | Info about specific people |
 | `personal` | Relationships, reflections, plans |
@@ -97,7 +97,7 @@ Organize memories into hierarchical namespaces — like a filesystem for knowled
 
 ```bash
 cortex save "Ran 5k in 24:30" --namespace health
-cortex save "MyApp uses Vapi" --namespace projects/myapp
+cortex save "MyApp uses React" --namespace projects/myapp
 
 # Exact namespace match
 cortex search "running times" --namespace health

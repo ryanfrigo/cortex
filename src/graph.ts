@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
-import { mkdirSync, existsSync } from 'fs';
+import { mkdirSync, existsSync, readFileSync } from 'fs';
 
 export interface Entity {
   id: string;
@@ -34,38 +34,27 @@ const STRONG_VERBS = [
   'replaces', 'includes', 'requires', 'built', 'maintains', 'configures',
 ];
 
-// Known entities with explicit types — matched case-insensitively
-const KNOWN_ENTITIES: Array<{ pattern: RegExp; name: string; type: string }> = [
-  // Projects
-  { pattern: /\bMyApp\b/gi, name: 'MyApp', type: 'project' },
-  { pattern: /\bDebate\b/gi, name: 'Debate', type: 'project' },
-  { pattern: /\bMarket\b/gi, name: 'Market', type: 'project' },
-  { pattern: /\bCortex\b/gi, name: 'Cortex', type: 'project' },
-  { pattern: /\bKalshi\b/gi, name: 'Kalshi', type: 'project' },
-  { pattern: /\bVideoGen\b/gi, name: 'VideoGen', type: 'project' },
-  { pattern: /\bMyBrand\b/gi, name: 'MyBrand', type: 'project' },
-  // Companies
-  { pattern: /\bEquinix\b/gi, name: 'Equinix', type: 'company' },
-  { pattern: /\bVapi\b/gi, name: 'Vapi', type: 'company' },
-  { pattern: /\bStripe\b/gi, name: 'Stripe', type: 'company' },
-  { pattern: /\bVercel\b/gi, name: 'Vercel', type: 'company' },
-  { pattern: /\bConvex\b/gi, name: 'Convex', type: 'company' },
-  { pattern: /\bOpenAI\b/gi, name: 'OpenAI', type: 'company' },
-  { pattern: /\bAnthropic\b/gi, name: 'Anthropic', type: 'company' },
-  { pattern: /\bRetell\b/gi, name: 'Retell', type: 'company' },
-  { pattern: /\bMintlify\b/gi, name: 'Mintlify', type: 'company' },
-  // People
-  { pattern: /\bRyan\s+Frigo\b/gi, name: 'User', type: 'person' },
-  { pattern: /\bFamily\s+Member\b/gi, name: 'Family', type: 'person' },
-  { pattern: /\bTherapist\b/gi, name: 'Therapist', type: 'person' },
-  // Locations
-  { pattern: /\bMyCity\b/gi, name: 'MyCity', type: 'location' },
-  { pattern: /\bAustin\b/gi, name: 'Austin', type: 'location' },
-  { pattern: /\bBerkeley\b/gi, name: 'Berkeley', type: 'location' },
-  { pattern: /\bSan\s+Francisco\b/gi, name: 'San Francisco', type: 'location' },
-  { pattern: /\bBerlin\b/gi, name: 'Berlin', type: 'location' },
-  { pattern: /\bGermany\b/gi, name: 'Germany', type: 'location' },
-];
+/**
+ * User-defined known entities for higher-precision extraction.
+ * Configure via ~/.cortex/known-entities.json (optional).
+ * Format: [{ "pattern": "\\bMyProject\\b", "name": "MyProject", "type": "project" }, ...]
+ */
+function loadKnownEntities(): Array<{ pattern: RegExp; name: string; type: string }> {
+  try {
+    const configPath = join(homedir(), '.cortex', 'known-entities.json');
+    if (existsSync(configPath)) {
+      const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+      return (raw as Array<{ pattern: string; name: string; type: string }>).map(e => ({
+        pattern: new RegExp(e.pattern, 'gi'),
+        name: e.name,
+        type: e.type,
+      }));
+    }
+  } catch { /* ignore malformed config */ }
+  return [];
+}
+
+const KNOWN_ENTITIES = loadKnownEntities();
 
 // Common English words to skip when extracting proper nouns
 const COMMON_WORDS = new Set([

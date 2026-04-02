@@ -358,7 +358,7 @@ export class MemoryEngine {
       if (options.namespace) {
         const ns = m.namespace ?? 'general';
         if (options.namespacePrefix) {
-          // Prefix match: "projects/" matches "projects/myapp", "projects/kalshi"
+          // Prefix match: "projects/" matches "projects/myapp", "projects/trading"
           const prefix = options.namespace.endsWith('/') ? options.namespace : options.namespace + '/';
           if (ns !== options.namespace && !ns.startsWith(prefix)) continue;
         } else {
@@ -1055,7 +1055,7 @@ export class MemoryEngine {
       times_refuted: 0,
       status: 'active' as const,
       history: [{ date: now, confidence, reason: 'initial belief' }],
-      holder: (options?.holder || 'orion') as _'user'_ | 'orion' | 'shared',
+      holder: (options?.holder || 'agent') as 'user' | 'agent' | 'shared',
       stated_confidence: confidence
     };
 
@@ -1252,7 +1252,7 @@ export class MemoryEngine {
   async savePrediction(statement: string, confidence: number, deadline: string, holder: string, domain: string): Promise<Memory> {
     const metadata: PredictionMetadata = {
       confidence,
-      holder: holder as _'user'_ | 'orion' | 'shared',
+      holder: holder as 'user' | 'agent' | 'shared',
       deadline,
       domain,
       status: 'open'
@@ -1440,7 +1440,7 @@ export class MemoryEngine {
   /** Log a behavioral signal (what someone actually did, vs what they said) */
   async logBehavior(description: string, holder: string, relatedBeliefs?: string[]): Promise<Memory> {
     const metadata: MemoryMetadata = {
-      holder: holder as _'user'_ | 'orion' | 'shared',
+      holder: holder as 'user' | 'agent' | 'shared',
       relatedBeliefs: relatedBeliefs || []
     } as any;
 
@@ -1536,7 +1536,7 @@ export class MemoryEngine {
   async logAttention(topics: string[], holder: string, durationMinutes?: number): Promise<void> {
     const now = new Date().toISOString();
     const metadata: MemoryMetadata = {
-      holder: holder as _'user'_ | 'orion' | 'shared',
+      holder: holder as 'user' | 'agent' | 'shared',
       topics,
       durationMinutes: durationMinutes || 1,
       timestamp: now
@@ -1614,7 +1614,7 @@ export class MemoryEngine {
   /** Create a follow-up from shadow/reflection findings */
   async createFollowUp(item: string, source: string, holder: string): Promise<Memory> {
     const metadata: MemoryMetadata = {
-      holder: holder as _'user'_ | 'orion' | 'shared',
+      holder: holder as 'user' | 'agent' | 'shared',
       source,
       status: 'open',
       created_from: source

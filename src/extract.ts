@@ -18,7 +18,7 @@ export interface ExtractedMemory {
 
 /** Common English first names for people detection */
 const COMMON_NAMES = new Set([
-  'ryan', 'john', 'jane', 'michael', 'sarah', 'david', 'emily', 'james',
+  'john', 'jane', 'michael', 'sarah', 'david', 'emily', 'james',
   'olivia', 'robert', 'emma', 'william', 'ava', 'joseph', 'isabella',
   'charles', 'mia', 'thomas', 'sophia', 'christopher', 'charlotte',
   'daniel', 'amelia', 'matthew', 'harper', 'anthony', 'evelyn', 'mark',
@@ -64,7 +64,7 @@ const PERSON_MENTION_PATTERNS = [
 
 /** Lines/sections to skip (meta-noise) */
 const SKIP_PATTERNS = [
-  /^(you:|me:|user:|assistant:|human:|ai:|system:|claude:|orion:|ryan:)\s*/i,
+  /^(you:|me:|user:|assistant:|human:|ai:|system:|claude:)\s*/i,
   /^[>\-*#]+\s*/,         // markdown list/heading prefixes
   /^```/,                  // code block delimiters
   /^https?:\/\//,          // bare URLs
@@ -72,9 +72,9 @@ const SKIP_PATTERNS = [
 ];
 
 function cleanLine(line: string): string {
-  // Remove common speaker prefixes like _"User_: " or "[User] "
+  // Remove common speaker prefixes like "[User] "
   return line
-    .replace(/^\[?(?:User|Human|Assistant|AI|Claude|Orion|Ryan)\]?:\s*/i, '')
+    .replace(/^\[?(?:User|Human|Assistant|AI|Claude)\]?:\s*/i, '')
     .replace(/^[>\-*#]+\s*/, '')
     .trim();
 }

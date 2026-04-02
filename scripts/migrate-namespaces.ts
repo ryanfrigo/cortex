@@ -10,7 +10,7 @@ const BATCH_SIZE = 200;
 
 // Known project names for tag-based namespace assignment
 const PROJECT_NAMES = [
-  'myapp', 'debate', 'market', 'cortex', 'kalshi',
+  'myapp', 'dashboard', 'blog', 'docs', 'trading',
   'videogen', 'mybrand', 'viral-machine',
 ];
 

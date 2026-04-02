@@ -1,7 +1,7 @@
 export type MemoryType = 'episodic' | 'semantic' | 'procedural' | 'decision' | 'lesson' | 'fact' | 'preference' | 'project-state' | 'person' | 'session' | 'belief' | 'reflection' | 'shadow' | 'prediction' | 'behavior' | 'follow-up' | 'attention';
 
 export interface MemoryMetadata {
-  project?: string;      // e.g. "myapp", "kalshi", "market"
+  project?: string;      // e.g. "myapp", "trading", "dashboard"
   confidence?: number;   // 0-1, how verified is this
   supersedes?: string;   // ID of memory this replaces
   supersededIds?: string[]; // IDs of memories this consolidation replaces
@@ -17,7 +17,7 @@ export interface MemoryMetadata {
 
 export interface BeliefMetadata extends MemoryMetadata {
   confidence: number;           // 0.0-1.0
-  domain: string;               // _'user'_ | 'projects' | 'self' | 'world'
+  domain: string;               // 'user' | 'projects' | 'self' | 'world'
   evidence_for?: string[];      // memory IDs supporting this belief
   evidence_against?: string[];  // memory IDs contradicting this belief
   last_challenged?: string;     // ISO date
@@ -25,7 +25,7 @@ export interface BeliefMetadata extends MemoryMetadata {
   times_refuted?: number;
   status?: 'active' | 'refuted' | 'confirmed' | 'retired';
   history?: Array<{ date: string; confidence: number; reason: string }>;
-  holder?: _'user'_ | 'orion' | 'shared';
+  holder?: 'user' | 'agent' | 'shared';
   stated_confidence?: number;    // what was explicitly said
   revealed_confidence?: number;  // inferred from behavior
   gap?: number;                  // |stated - revealed|
@@ -33,9 +33,9 @@ export interface BeliefMetadata extends MemoryMetadata {
 
 export interface PredictionMetadata extends MemoryMetadata {
   confidence: number;           // 0.0-1.0
-  holder: _'user'_ | 'orion' | 'shared';
+  holder: 'user' | 'agent' | 'shared';
   deadline: string;             // ISO date — when to check
-  domain: string;               // _'user'_ | 'projects' | 'self' | 'world'
+  domain: string;               // 'user' | 'projects' | 'self' | 'world'
   status: 'open' | 'correct' | 'wrong' | 'partial' | 'expired';
   resolution?: string;          // what actually happened
   resolved_at?: string;         // ISO date
@@ -74,7 +74,7 @@ export interface MemoryInput {
 export interface SearchOptions {
   query: string;
   namespace?: string;
-  /** If true, treat namespace as a prefix — matches "projects/myapp", "projects/kalshi", etc. */
+  /** If true, treat namespace as a prefix — matches "projects/myapp", "projects/trading", etc. */
   namespacePrefix?: boolean;
   limit?: number;
   type?: MemoryType;
