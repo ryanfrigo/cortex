@@ -21,7 +21,7 @@ interface TestCase {
 
 const TEST_CASES: TestCase[] = [
   // Food / Health
-  { query: "What did User eat for breakfast?", expectedKeywords: ["breakfast", "oatmeal", "eggs", "ate", "meal", "food"], namespace: "health", category: "health" },
+  { query: "What did the user eat for breakfast?", expectedKeywords: ["breakfast", "oatmeal", "eggs", "ate", "meal", "food"], namespace: "health", category: "health" },
   { query: "User's morning meal routine", expectedKeywords: ["breakfast", "oatmeal", "eggs", "morning", "meal", "ate"], namespace: "health", category: "health" },
   { query: "Any health or fitness notes?", expectedKeywords: ["health", "fitness", "gym", "workout", "exercise", "weight", "run"], namespace: "health", category: "health" },
 
@@ -34,8 +34,8 @@ const TEST_CASES: TestCase[] = [
   { query: "Cortex memory system", expectedKeywords: ["cortex", "memory", "lancedb", "vector", "search", "mcp"], namespace: "projects", category: "projects" },
 
   // Personal / Relationships
-  { query: "When did User break up with Partner?", expectedKeywords: [_"partner"_, "breakup", "broke up", "relationship", "split"], category: "personal" },
-  { query: "User's relationship history", expectedKeywords: ["relationship", "dating", "girlfriend", _"partner"_, "broke"], category: "personal" },
+  { query: "When did the user break up?", expectedKeywords: ["breakup", "broke up", "relationship", "split"], category: "personal" },
+  { query: "User's relationship history", expectedKeywords: ["relationship", "dating", "girlfriend", "broke"], category: "personal" },
 
   // Learnings
   { query: "What lesson did we learn about sub-agents?", expectedKeywords: ["sub-agent", "subagent", "agent", "lesson", "learn", "spawn"], category: "learnings" },
@@ -43,9 +43,9 @@ const TEST_CASES: TestCase[] = [
   { query: "Debugging tips and lessons", expectedKeywords: ["debug", "lesson", "systematic", "fix", "error", "bug"], category: "learnings" },
 
   // Factual
-  { query: "What's User's address?", expectedKeywords: ["address", "street", "city", "apartment", "san francisco", "sf", "live"], category: "factual" },
-  { query: "User's phone number", expectedKeywords: ["phone", "510", "number", "contact"], category: "factual" },
-  { query: "What machine does User use?", expectedKeywords: ["macbook", "m2", "mac", "laptop", "machine"], category: "factual" },
+  { query: "What's the user's address?", expectedKeywords: ["address", "street", "city", "apartment", "san francisco", "sf", "live"], category: "factual" },
+  { query: "User's phone number", expectedKeywords: ["phone", "number", "contact"], category: "factual" },
+  { query: "What machine does the user use?", expectedKeywords: ["macbook", "m2", "mac", "laptop", "machine"], category: "factual" },
 
   // Semantic-only (paraphrased, no keyword overlap)
   { query: "tools for making money from prediction markets", expectedKeywords: ["kalshi", "trading", "bet", "market", "prediction"], category: "semantic" },
