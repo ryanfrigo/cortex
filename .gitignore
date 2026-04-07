@@ -1,0 +1,18 @@
+node_modules/
+dist/
+memory/
+*.backup-*
+.env
+.env.local
+
+# Cortex listener
+listener/venv/
+listener/__pycache__/
+listener/*.pyc
+listener/recordings/
+listener/transcripts/
+listener/.listener-state.json
+listener/*.wav
+listener/*.mp3
+__pycache__/
+*.egg-info/

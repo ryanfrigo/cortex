@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cortex-listener"
+version = "0.1.0"
+description = "Local audio capture and transcription daemon for Cortex memory"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "mlx-whisper>=0.4.0",
+    "sounddevice>=0.5.0",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+]
+
+[project.optional-dependencies]
+system-audio = ["mac-system-audio>=0.1.0"]
+
+[project.scripts]
+cortex-listen = "cortex_listener.cli:main"
